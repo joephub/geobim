@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Eenvoudige IFC-georeferentiecontrole op kaart">
+  <link rel="icon" href="data:,">
+  <title>GeoBIM IFC-controle</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>GeoBIM</h1>
+      <p>Laad een IFC en controleer direct waar het model volgens de aanwezige georeferentie ligt.</p>
+    </div>
+    <label class="upload-button">
+      <input id="ifcInput" type="file" accept=".ifc" multiple>
+      IFC-model(len) kiezen
+    </label>
+  </header>
+
+  <main class="layout">
+    <aside class="panel">
+      <section class="card intro">
+        <h2>Georeferentiecontrole</h2>
+        <p>De bestanden blijven lokaal in je browser. De app wijzigt of uploadt niets.</p>
+        <div id="overallStatus" class="status neutral">Nog geen IFC geladen</div>
+      </section>
+
+      <section class="card">
+        <div class="section-title">
+          <h2>Modellen</h2>
+          <button id="clearBtn" class="link-button" type="button">Alles verwijderen</button>
+        </div>
+        <div id="models" class="models empty">Kies één of meerdere IFC-bestanden.</div>
+      </section>
+
+      <section class="card">
+        <h2>Kaartlagen</h2>
+        <label class="field-label" for="baseLayer">Achtergrond</label>
+        <select id="baseLayer">
+          <option value="osm">OpenStreetMap</option>
+          <option value="luchtfoto">PDOK actuele luchtfoto</option>
+        </select>
+        <label class="check"><input id="bgtToggle" type="checkbox"> BGT-achtergrond</label>
+        <label class="check"><input id="kadasterToggle" type="checkbox"> Kadastrale kaart</label>
+      </section>
+
+      <section class="card legend">
+        <h2>Betekenis</h2>
+        <p><span class="dot good"></span><strong>Groen:</strong> native kaartconversie en herkenbaar CRS.</p>
+        <p><span class="dot warn"></span><strong>Oranje:</strong> plaatsing mogelijk, maar via een minder betrouwbare fallback.</p>
+        <p><span class="dot bad"></span><strong>Rood:</strong> onvoldoende informatie voor automatische plaatsing.</p>
+      </section>
+    </aside>
+
+    <section class="map-wrap">
+      <div id="map"></div>
+      <div id="loading" class="loading hidden">IFC verwerken…</div>
+      <div class="map-note">De gekleurde contour is afgeleid uit de IFC-geometrie. Controleer hem visueel tegen luchtfoto, BGT of kadastrale kaart.</div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/proj4@2.15.0/dist/proj4.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

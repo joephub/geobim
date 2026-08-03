@@ -1,0 +1,10 @@
+1. Verwijder eventueel de oude repository en maak een nieuwe openbare repository 'geobim'.
+2. Pak deze ZIP uit.
+3. Upload ALLE BESTANDEN uit de uitgepakte map naar de hoofdmap van de repository.
+4. Ga naar Settings > Pages.
+5. Kies Deploy from a branch.
+6. Kies branch main en map /(root).
+7. Klik Save.
+8. Open https://joephub.github.io/geobim/
+
+Belangrijk: kies NIET voor GitHub Actions. Er is geen buildproces nodig.
