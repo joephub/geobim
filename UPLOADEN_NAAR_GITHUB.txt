@@ -1,4 +1,4 @@
-GEOBIM V2.0.0 OP GITHUB PAGES ZETTEN
+GEOBIM V2.1.0 OP GITHUB PAGES ZETTEN
 
 1. Pak deze ZIP uit op je computer.
 2. Open de GitHub-repository joephub/geobim.
@@ -13,7 +13,7 @@ GEOBIM V2.0.0 OP GITHUB PAGES ZETTEN
 10. Kies Branch: main en Folder: /(root).
 11. Klik Save.
 12. Wacht enkele minuten en open https://joephub.github.io/geobim/
-13. Controleer dat bovenaan GeoBIM v2.0.0 staat.
+13. Controleer dat bovenaan GeoBIM v2.1.0 staat.
 14. Staat nog een oude versie in beeld, druk dan op Ctrl+F5.
 
 In de hoofdmap van de repository moeten direct staan:

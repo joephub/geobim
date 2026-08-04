@@ -18,13 +18,37 @@ import {
   scaleMeshHeight,
   meshBounds,
   buildIfc4
-} from "./core.js?v=2.0.0";
+} from "./core.js?v=2.1.0";
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 const BAG_API = "https://api.pdok.nl/kadaster/bag/ogc/v2/collections/pand/items";
 const BAG3D_API = "https://api.3dbag.nl/collections/pand/items";
+const ADDRESS_API = "https://api.pdok.nl/kadaster/location-api/v1/search";
+const THREE_DBAG_ROUTES = [
+  {
+    id: "allorigins",
+    label: "AllOrigins",
+    buildUrl: (targetUrl) => `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+  },
+  {
+    id: "corsproxy-nl",
+    label: "CORSproxy.nl",
+    buildUrl: buildCorsProxyNlUrl
+  },
+  {
+    id: "corsproxy-io",
+    label: "CorsProxy.io",
+    buildUrl: (targetUrl) => `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`
+  },
+  {
+    id: "direct",
+    label: "3DBAG rechtstreeks",
+    buildUrl: (targetUrl) => targetUrl
+  }
+];
 const MAX_BAG_FEATURES = 3000;
 const MAX_3DBAG_FEATURES = 1200;
+const THREE_DBAG_PAGE_SIZE = 10;
 const MAX_AUTO_3D_FETCH = 100;
 const $ = (id) => document.getElementById(id);
 
@@ -33,19 +57,15 @@ const dom = {
   clearIfcBtn: $("clearIfcBtn"),
   models: $("models"),
   overallStatus: $("overallStatus"),
-  polygonBtn: $("polygonBtn"),
-  rectangleBtn: $("rectangleBtn"),
-  circleMapBtn: $("circleMapBtn"),
-  circleX: $("circleX"),
-  circleY: $("circleY"),
+  polygonToolBtn: $("polygonToolBtn"),
+  rectangleToolBtn: $("rectangleToolBtn"),
+  circleToolBtn: $("circleToolBtn"),
+  polygonOptions: $("polygonOptions"),
+  polygonStartBtn: $("polygonStartBtn"),
+  polygonStopBtn: $("polygonStopBtn"),
+  circleOptions: $("circleOptions"),
   circleRadius: $("circleRadius"),
-  useMapCenterBtn: $("useMapCenterBtn"),
-  useIfcCenterBtn: $("useIfcCenterBtn"),
-  makeCircleBtn: $("makeCircleBtn"),
-  drawControls: $("drawControls"),
-  drawInstruction: $("drawInstruction"),
-  finishDrawBtn: $("finishDrawBtn"),
-  cancelDrawBtn: $("cancelDrawBtn"),
+  circlePickBtn: $("circlePickBtn"),
   clearAreaBtn: $("clearAreaBtn"),
   areaStatus: $("areaStatus"),
   loadBagBtn: $("loadBagBtn"),
@@ -77,6 +97,10 @@ const dom = {
   bgtToggle: $("bgtToggle"),
   kadasterToggle: $("kadasterToggle"),
   layerStatus: $("layerStatus"),
+  addressSearchForm: $("addressSearchForm"),
+  addressSearchInput: $("addressSearchInput"),
+  addressSearchButton: $("addressSearchButton"),
+  addressResults: $("addressResults"),
   loading: $("loading"),
   loadingText: $("loadingText"),
   mapHint: $("mapHint"),
@@ -89,11 +113,16 @@ const state = {
   ifcCounter: 0,
   area: null,
   areaLabel: "",
+  selectedDrawTool: null,
   drawing: { mode: null, points: [], cursor: null },
   bag: new Map(),
   selectedBagId: null,
   bagTruncated: false,
-  threeDTruncated: false
+  threeDTruncated: false,
+  threeDBagRouteId: null,
+  addressAbortController: null,
+  addressSearchTimer: null,
+  addressMarker: null
 };
 
 proj4.defs(
@@ -138,8 +167,8 @@ map.on("load", () => {
     "PDOK actuele luchtfoto"
   );
   initializeGeoJsonLayers();
-  useMapCenterForCircle();
   syncBagSource();
+  updateDrawToolUi();
 });
 
 function initializeGeoJsonLayers() {
@@ -445,15 +474,28 @@ dom.ifcInput.addEventListener("change", async (event) => {
   dom.ifcInput.value = "";
 });
 dom.clearIfcBtn.addEventListener("click", clearAllIfcModels);
-dom.polygonBtn.addEventListener("click", () => startDrawing("polygon"));
-dom.rectangleBtn.addEventListener("click", () => startDrawing("rectangle"));
-dom.circleMapBtn.addEventListener("click", () => startDrawing("circle"));
-dom.finishDrawBtn.addEventListener("click", finishDrawing);
-dom.cancelDrawBtn.addEventListener("click", cancelDrawing);
+dom.polygonToolBtn.addEventListener("click", () => selectDrawTool("polygon"));
+dom.rectangleToolBtn.addEventListener("click", () => selectDrawTool("rectangle"));
+dom.circleToolBtn.addEventListener("click", () => selectDrawTool("circle"));
+dom.polygonStartBtn.addEventListener("click", () => startDrawing("polygon"));
+dom.polygonStopBtn.addEventListener("click", finishDrawing);
+dom.circlePickBtn.addEventListener("click", () => {
+  const radius = positiveNumber(dom.circleRadius.value, NaN);
+  if (!Number.isFinite(radius)) {
+    toast("Vul eerst een geldige straal in meters in.", "warn");
+    dom.circleRadius.focus();
+    return;
+  }
+  dom.circleRadius.value = String(radius);
+  startDrawing("circle");
+});
+dom.circleRadius.addEventListener("input", () => {
+  if (state.drawing.mode === "circle") updateTemporaryDrawing();
+});
+dom.circleRadius.addEventListener("change", () => {
+  dom.circleRadius.value = String(positiveNumber(dom.circleRadius.value, 250));
+});
 dom.clearAreaBtn.addEventListener("click", clearArea);
-dom.makeCircleBtn.addEventListener("click", makeCircleFromInputs);
-dom.useMapCenterBtn.addEventListener("click", useMapCenterForCircle);
-dom.useIfcCenterBtn.addEventListener("click", useIfcCenterForCircle);
 dom.loadBagBtn.addEventListener("click", loadBag2d);
 dom.load3dBtn.addEventListener("click", loadThreeDBagForArea);
 dom.clearBagBtn.addEventListener("click", () => clearBagData());
@@ -485,6 +527,30 @@ dom.exportIfcBtn.addEventListener("click", exportSelectedBuildingsToIfc);
 dom.baseLayer.addEventListener("change", updateBaseLayer);
 dom.bgtToggle.addEventListener("change", (event) => handleOverlayToggle("bgt", event.target));
 dom.kadasterToggle.addEventListener("change", (event) => handleOverlayToggle("kadaster", event.target));
+dom.addressSearchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  searchAddresses(dom.addressSearchInput.value, { selectFirst: true });
+});
+dom.addressSearchInput.addEventListener("input", () => {
+  clearTimeout(state.addressSearchTimer);
+  const query = dom.addressSearchInput.value.trim();
+  if (query.length < 3) {
+    closeAddressResults();
+    return;
+  }
+  state.addressSearchTimer = setTimeout(() => searchAddresses(query), 320);
+});
+dom.addressSearchInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeAddressResults();
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!dom.addressSearchForm.contains(event.target)) closeAddressResults();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !state.drawing.mode) return;
+  cancelDrawing({ keepTool: true });
+  toast("Tekenen geannuleerd.", "warn");
+});
 
 map.on("click", (event) => {
   if (state.drawing.mode) {
@@ -499,9 +565,7 @@ map.on("mousemove", (event) => {
   updateTemporaryDrawing();
 });
 map.on("dblclick", (event) => {
-  if (state.drawing.mode !== "polygon") return;
-  event.preventDefault();
-  finishDrawing();
+  if (state.drawing.mode === "polygon") event.preventDefault();
 });
 map.on("mouseenter", "bag-fill", () => { if (!state.drawing.mode) map.getCanvas().style.cursor = "pointer"; });
 map.on("mouseleave", "bag-fill", () => { if (!state.drawing.mode) map.getCanvas().style.cursor = ""; });
@@ -514,51 +578,220 @@ function updateBaseLayer() {
   if (map.getLayer("luchtfoto")) map.setLayoutProperty("luchtfoto", "visibility", aerial ? "visible" : "none");
 }
 
+// Adres zoeken via de PDOK Location API
+
+async function searchAddresses(value, { selectFirst = false } = {}) {
+  const query = String(value || "").trim();
+  clearTimeout(state.addressSearchTimer);
+  if (query.length < 3) {
+    closeAddressResults();
+    if (selectFirst) toast("Vul minimaal drie tekens van een adres of postcode in.", "warn");
+    return;
+  }
+
+  if (state.addressAbortController) state.addressAbortController.abort();
+  const controller = new AbortController();
+  state.addressAbortController = controller;
+  dom.addressSearchButton.disabled = true;
+  dom.addressSearchForm.setAttribute("aria-busy", "true");
+  if (!selectFirst) renderAddressMessage("Adressen zoeken…");
+
+  const url = new URL(ADDRESS_API);
+  url.searchParams.set("q", query);
+  url.searchParams.set("adres[version]", "1");
+  url.searchParams.set("f", "json");
+
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/geo+json, application/json;q=0.9, */*;q=0.1" },
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`PDOK Location API antwoordde met HTTP ${response.status}`);
+    const json = await response.json();
+    if (state.addressAbortController !== controller) return;
+    const features = Array.isArray(json?.features) ? json.features.slice(0, 8) : [];
+    if (selectFirst) {
+      if (features.length) chooseAddressResult(features[0]);
+      else {
+        renderAddressMessage("Geen adres gevonden.");
+        toast("Geen adres gevonden voor deze zoekopdracht.", "warn");
+      }
+    } else {
+      renderAddressResults(features);
+    }
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    console.warn("Adres zoeken mislukt", error);
+    renderAddressMessage("Adres zoeken is tijdelijk niet beschikbaar.");
+    if (selectFirst) toast("Adres zoeken is tijdelijk niet beschikbaar.", "bad");
+  } finally {
+    if (state.addressAbortController === controller) {
+      state.addressAbortController = null;
+      dom.addressSearchButton.disabled = false;
+      dom.addressSearchForm.removeAttribute("aria-busy");
+    }
+  }
+}
+
+function renderAddressResults(features) {
+  dom.addressResults.replaceChildren();
+  if (!features.length) {
+    renderAddressMessage("Geen adressen gevonden.");
+    return;
+  }
+  for (const feature of features) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "address-result";
+    button.setAttribute("role", "option");
+    const title = document.createElement("strong");
+    title.textContent = addressResultLabel(feature);
+    const meta = document.createElement("span");
+    meta.textContent = "Adres · PDOK";
+    button.append(title, meta);
+    button.addEventListener("click", () => chooseAddressResult(feature));
+    dom.addressResults.appendChild(button);
+  }
+  dom.addressResults.classList.remove("hidden");
+}
+
+function renderAddressMessage(message) {
+  dom.addressResults.replaceChildren();
+  const item = document.createElement("div");
+  item.className = "address-empty";
+  item.textContent = message;
+  dom.addressResults.appendChild(item);
+  dom.addressResults.classList.remove("hidden");
+}
+
+function chooseAddressResult(feature) {
+  const geometry = feature?.geometry;
+  if (!geometry) {
+    toast("Dit adresresultaat bevat geen bruikbare locatie.", "warn");
+    return;
+  }
+  dom.addressSearchInput.value = addressResultLabel(feature);
+  closeAddressResults();
+
+  if (state.addressMarker) {
+    state.addressMarker.remove();
+    state.addressMarker = null;
+  }
+
+  if (geometry.type === "Point" && Array.isArray(geometry.coordinates)) {
+    const point = geometry.coordinates.slice(0, 2).map(Number);
+    if (point.every(Number.isFinite)) {
+      state.addressMarker = new maplibregl.Marker().setLngLat(point).addTo(map);
+      map.flyTo({ center: point, zoom: 18, duration: 800, essential: true });
+      return;
+    }
+  }
+
+  const bbox = bboxOfGeometry(geometry);
+  if (bbox) {
+    map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 70, maxZoom: 18, duration: 800 });
+    return;
+  }
+  toast("Dit adresresultaat bevat geen bruikbare kaartgeometrie.", "warn");
+}
+
+function addressResultLabel(feature) {
+  const properties = feature?.properties || {};
+  return String(
+    properties.display_name ||
+    properties.weergavenaam ||
+    properties.name ||
+    feature?.id ||
+    "Onbekend adres"
+  );
+}
+
+function closeAddressResults() {
+  dom.addressResults.classList.add("hidden");
+  dom.addressResults.replaceChildren();
+}
+
 // Exportgebied tekenen
 
-function startDrawing(mode) {
-  cancelDrawing();
-  state.drawing = { mode, points: [], cursor: null };
-  dom.drawControls.classList.remove("hidden");
-  dom.finishDrawBtn.classList.toggle("hidden", mode !== "polygon");
-  const instructions = {
-    polygon: "Klik opeenvolgende hoekpunten. Klik dubbel of kies ‘Voltooien’ zodra de vrije vorm gesloten mag worden.",
-    rectangle: "Klik de eerste hoek en daarna de tegenoverliggende hoek van de rechthoek.",
-    circle: "Klik één keer op de kaart om het RD-middelpunt van de cirkel te kiezen. De ingevulde straal wordt gebruikt."
+function selectDrawTool(mode) {
+  const sameTool = state.selectedDrawTool === mode;
+  if (sameTool && !state.drawing.mode) {
+    state.selectedDrawTool = null;
+    updateDrawToolUi();
+    return;
+  }
+  cancelDrawing({ keepTool: true });
+  state.selectedDrawTool = mode;
+  updateDrawToolUi();
+  if (mode === "rectangle") startDrawing("rectangle");
+}
+
+function updateDrawToolUi() {
+  const toolButtons = {
+    polygon: dom.polygonToolBtn,
+    rectangle: dom.rectangleToolBtn,
+    circle: dom.circleToolBtn
   };
-  dom.drawInstruction.textContent = instructions[mode];
-  dom.mapHint.textContent = instructions[mode];
+  for (const [mode, button] of Object.entries(toolButtons)) {
+    const active = state.selectedDrawTool === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  dom.polygonOptions.classList.toggle("hidden", state.selectedDrawTool !== "polygon");
+  dom.circleOptions.classList.toggle("hidden", state.selectedDrawTool !== "circle");
+  const polygonActive = state.drawing.mode === "polygon";
+  dom.polygonStartBtn.disabled = polygonActive;
+  dom.polygonStopBtn.disabled = !polygonActive;
+  dom.circlePickBtn.disabled = state.drawing.mode === "circle";
+  dom.circlePickBtn.textContent = state.drawing.mode === "circle"
+    ? "Klik nu op de kaart"
+    : "Kies middelpunt op kaart";
+}
+
+function startDrawing(mode) {
+  cancelDrawing({ keepTool: true });
+  state.selectedDrawTool = mode;
+  state.drawing = { mode, points: [], cursor: null };
+  const instructions = {
+    polygon: "Klik de hoekpunten van de vrije vorm op de kaart. Kies daarna Stop in het menu.",
+    rectangle: "Klik de eerste hoek en daarna de tegenoverliggende hoek van de rechthoek.",
+    circle: "Klik op de kaart om het middelpunt van de cirkel te kiezen."
+  };
+  dom.mapHint.textContent = `${instructions[mode]} Druk op Esc om te annuleren.`;
   dom.mapHint.classList.remove("hidden");
-  map.getCanvas().style.cursor = "crosshair";
-  if (mode === "polygon") map.doubleClickZoom.disable();
+  if (state.mapReady) map.getCanvas().style.cursor = "crosshair";
+  if (mode === "polygon" && state.mapReady) map.doubleClickZoom.disable();
+  updateDrawToolUi();
   updateTemporaryDrawing();
 }
 
-function cancelDrawing() {
+function cancelDrawing({ keepTool = false } = {}) {
   if (state.drawing.mode === "polygon" && state.mapReady) map.doubleClickZoom.enable();
   state.drawing = { mode: null, points: [], cursor: null };
-  dom.drawControls.classList.add("hidden");
-  dom.finishDrawBtn.classList.add("hidden");
+  if (!keepTool) state.selectedDrawTool = null;
   dom.mapHint.classList.add("hidden");
   if (state.mapReady) map.getCanvas().style.cursor = "";
   setGeoJsonSource("draw-temp", emptyFeatureCollection());
+  updateDrawToolUi();
 }
 
 function handleDrawingClick(point) {
   const { mode } = state.drawing;
   if (mode === "circle") {
+    const radius = positiveNumber(dom.circleRadius.value, 250);
     const [x, y] = toRd(point);
-    dom.circleX.value = formatFixed(x, 2);
-    dom.circleY.value = formatFixed(y, 2);
-    makeCircleFromInputs();
-    cancelDrawing();
+    const feature = circlePolygon(x, y, radius, fromRd, 96);
+    setArea(feature, `Cirkel · straal ${formatNumber(radius, 0)} m`);
+    fitGeometry(feature.geometry, 60, 18);
+    cancelDrawing({ keepTool: true });
     return;
   }
   state.drawing.points.push(point);
   if (mode === "rectangle" && state.drawing.points.length >= 2) {
     const feature = rectanglePolygon(state.drawing.points[0], state.drawing.points[1]);
     setArea(feature, "Rechthoek");
-    cancelDrawing();
+    cancelDrawing({ keepTool: true });
     return;
   }
   updateTemporaryDrawing();
@@ -572,7 +805,7 @@ function finishDrawing() {
   }
   const feature = freePolygon(state.drawing.points);
   setArea(feature, "Vrije vorm");
-  cancelDrawing();
+  cancelDrawing({ keepTool: true });
 }
 
 function updateTemporaryDrawing() {
@@ -599,44 +832,6 @@ function updateTemporaryDrawing() {
   setGeoJsonSource("draw-temp", { type: "FeatureCollection", features });
 }
 
-function makeCircleFromInputs() {
-  const x = Number(dom.circleX.value);
-  const y = Number(dom.circleY.value);
-  const radius = Number(dom.circleRadius.value);
-  if (![x, y, radius].every(Number.isFinite) || radius <= 0) {
-    toast("Vul een geldig RD X-, RD Y-coördinaat en een positieve straal in.", "warn");
-    return;
-  }
-  const feature = circlePolygon(x, y, radius, fromRd, 96);
-  setArea(feature, `Cirkel · straal ${formatNumber(radius, 0)} m`);
-  fitGeometry(feature.geometry, 60, 18);
-}
-
-function useMapCenterForCircle() {
-  if (!state.mapReady) return;
-  const center = map.getCenter();
-  const [x, y] = toRd([center.lng, center.lat]);
-  dom.circleX.value = formatFixed(x, 2);
-  dom.circleY.value = formatFixed(y, 2);
-}
-
-function useIfcCenterForCircle() {
-  const model = state.ifcModels.find((item) => Number.isFinite(item.georef?.lon) && Number.isFinite(item.georef?.lat));
-  if (!model) {
-    toast("Er is nog geen IFC met een bruikbare positie geladen.", "warn");
-    return;
-  }
-  let rd;
-  if (["EPSG:28992", "EPSG:7415"].includes(model.georef.epsg) && Number.isFinite(model.georef.easting)) {
-    rd = [model.georef.easting, model.georef.northing];
-  } else {
-    rd = toRd([model.georef.lon, model.georef.lat]);
-  }
-  dom.circleX.value = formatFixed(rd[0], 2);
-  dom.circleY.value = formatFixed(rd[1], 2);
-  toast("IFC-positie als cirkelmiddelpunt overgenomen.");
-}
-
 function setArea(feature, label) {
   if (!feature?.geometry || feature.geometry.type !== "Polygon") {
     toast("Het exportgebied kon niet worden gemaakt.", "bad");
@@ -654,7 +849,7 @@ function setArea(feature, label) {
 }
 
 function clearArea() {
-  cancelDrawing();
+  cancelDrawing({ keepTool: true });
   state.area = null;
   state.areaLabel = "";
   setGeoJsonSource("export-area", emptyFeatureCollection());
@@ -664,15 +859,14 @@ function clearArea() {
 }
 
 function renderAreaStatus() {
+  dom.clearAreaBtn.disabled = !state.area;
   if (!state.area) {
     setStatus(dom.areaStatus, "Nog geen exportgebied getekend", "neutral");
     dom.loadBagBtn.disabled = false;
     return;
   }
   const area = polygonAreaApproxMeters2(state.area.geometry, toRd);
-  const center = geometryCentroid(state.area.geometry);
-  const rd = center ? toRd(center) : null;
-  const text = `${state.areaLabel} · ${formatArea(area)}${rd ? ` · middelpunt RD ${formatNumber(rd[0], 1)}, ${formatNumber(rd[1], 1)}` : ""}`;
+  const text = `${state.areaLabel} · ${formatArea(area)}`;
   const type = area > 25_000_000 ? "warn-status" : "good-status";
   setStatus(dom.areaStatus, text, type);
 }
@@ -838,7 +1032,7 @@ async function fetchThreeDBagByBbox(areaGeometry) {
   }
   const initial = new URL(BAG3D_API);
   initial.searchParams.set("bbox", [minX, minY, maxX, maxY].map((value) => Number(value).toFixed(3)).join(","));
-  initial.searchParams.set("limit", "100");
+  initial.searchParams.set("limit", String(THREE_DBAG_PAGE_SIZE));
   initial.searchParams.set("offset", "1");
 
   const wrappers = [];
@@ -846,23 +1040,27 @@ async function fetchThreeDBagByBbox(areaGeometry) {
   let pages = 0;
   let truncated = false;
   const wanted = new Set(state.bag.keys());
-  while (nextUrl && pages < 30 && wrappers.length <= MAX_3DBAG_FEATURES) {
+  while (nextUrl && pages < Math.ceil(MAX_3DBAG_FEATURES / THREE_DBAG_PAGE_SIZE) && wrappers.length <= MAX_3DBAG_FEATURES) {
     pages += 1;
     dom.loadingText.textContent = `3DBAG ophalen · pagina ${pages}…`;
-    const json = await fetchJson(nextUrl, "3DBAG");
+    const json = await fetchThreeDBagJson(nextUrl, "3DBAG");
     const page = Array.isArray(json.features) ? json.features : [];
     for (const wrapper of page) {
       const id = normalizeBagId(wrapper?.id || cityJsonAttributes(wrapper)?.identificatie);
       if (wanted.has(id)) wrappers.push(wrapper);
+    }
+    if (wrappers.length >= wanted.size) {
+      nextUrl = null;
+      break;
     }
     if (wrappers.length > MAX_3DBAG_FEATURES) {
       truncated = true;
       break;
     }
     let next = nextLink(json.links, nextUrl);
-    if (!next && Number(json.numberReturned) === 100 && Number(json.numberMatched) > pages * 100) {
+    if (!next && Number(json.numberReturned) === THREE_DBAG_PAGE_SIZE && Number(json.numberMatched) > pages * THREE_DBAG_PAGE_SIZE) {
       const url = new URL(initial.href);
-      url.searchParams.set("offset", String(pages * 100 + 1));
+      url.searchParams.set("offset", String(pages * THREE_DBAG_PAGE_SIZE + 1));
       next = url.href;
     }
     nextUrl = next;
@@ -931,7 +1129,7 @@ async function loadSelectedBuilding3d() {
 
 async function fetchThreeDBagById(bagId) {
   const url = `${BAG3D_API}/${encodeURIComponent(toThreeDBagId(bagId))}`;
-  return fetchJson(url, `3DBAG-pand ${bagId}`);
+  return fetchThreeDBagJson(url, `3DBAG-pand ${bagId}`);
 }
 
 function clearBagData({ silent = false } = {}) {
@@ -1187,7 +1385,7 @@ async function exportSelectedBuildingsToIfc() {
     if (dom.fetchMissing3d.checked && missing.length && missing.length <= MAX_AUTO_3D_FETCH) {
       setStatus(dom.exportStatus, `${missing.length} ontbrekende 3DBAG-panden ophalen…`, "info-status");
       let completed = 0;
-      await mapWithConcurrency(missing, 6, async (item) => {
+      await mapWithConcurrency(missing, 3, async (item) => {
         try {
           const wrapper = await fetchThreeDBagById(item.bagId);
           applyCityJsonWrapper(wrapper);
@@ -1362,9 +1560,6 @@ async function loadIfc(file) {
     drawIfcModel(model);
     renderIfcModels();
     zoomToIfcModel(model);
-    if (!state.area && Number.isFinite(georef.lon) && Number.isFinite(georef.lat)) {
-      useIfcCenterForCircle();
-    }
   } catch (error) {
     console.error(`IFC ${file.name} kon niet worden verwerkt`, error);
     const id = `ifc-model-${++state.ifcCounter}`;
@@ -2124,6 +2319,42 @@ function toRd(coordinate) {
 function fromRd(coordinate) {
   const result = proj4("EPSG:28992", "EPSG:4326", [Number(coordinate[0]), Number(coordinate[1])]);
   return result.map(Number);
+}
+
+function buildCorsProxyNlUrl(targetUrl) {
+  const target = new URL(targetUrl);
+  const protocol = target.protocol === "http:" ? "http" : "https";
+  return `https://corsproxy.nl/${protocol}/${target.host}${target.pathname}${target.search}`;
+}
+
+function orderedThreeDBagRoutes() {
+  const remembered = THREE_DBAG_ROUTES.find((route) => route.id === state.threeDBagRouteId);
+  if (!remembered) return [...THREE_DBAG_ROUTES];
+  const alternatives = THREE_DBAG_ROUTES.filter((route) => route.id !== remembered.id && route.id !== "direct");
+  const direct = THREE_DBAG_ROUTES.find((route) => route.id === "direct");
+  return remembered.id === "direct"
+    ? [remembered, ...alternatives]
+    : [remembered, ...alternatives, direct].filter(Boolean);
+}
+
+async function fetchThreeDBagJson(targetUrl, label = "3DBAG", timeoutMs = 120_000) {
+  const failures = [];
+  for (const route of orderedThreeDBagRoutes()) {
+    try {
+      const json = await fetchJson(route.buildUrl(targetUrl), `${label} via ${route.label}`, timeoutMs);
+      state.threeDBagRouteId = route.id;
+      return json;
+    } catch (error) {
+      failures.push(`${route.label}: ${String(error?.message || error)}`);
+    }
+  }
+  console.warn("Alle 3DBAG-routes zijn mislukt", failures);
+  const error = new Error(
+    "de 3DBAG-bron kon via geen van de beschikbare browserroutes worden bereikt. " +
+    "Probeer het later opnieuw of maak het selectiegebied kleiner"
+  );
+  error.details = failures;
+  throw error;
 }
 
 async function fetchJson(url, label = "Gegevens", timeoutMs = 90_000) {

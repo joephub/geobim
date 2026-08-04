@@ -346,7 +346,7 @@ export function buildIfc4({
   exportName = "GeoBIM BAG export",
   areaProperties = {},
   generatedAt = new Date(),
-  appVersion = "2.0.0"
+  appVersion = "2.1.0"
 }) {
   if (!Array.isArray(buildings) || !buildings.length) throw new Error("Geen gebouwen om te exporteren.");
   const safeOrigin = {

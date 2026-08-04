@@ -8,14 +8,14 @@
   <link rel="icon" href="data:,">
   <title>GeoBIM — IFC, BAG en 3DBAG</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
-  <link rel="stylesheet" href="./style.css?v=2.0.0">
+  <link rel="stylesheet" href="./style.css?v=2.1.0">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <div class="brand-line">
         <h1>GeoBIM</h1>
-        <span class="version">v2.0.0</span>
+        <span class="version">v2.1.0</span>
       </div>
       <p>Controleer IFC-georeferentie en maak een geogerefereerd IFC-contextmodel uit BAG en 3DBAG.</p>
     </div>
@@ -35,7 +35,7 @@
           <li>Laad BAG 2D en daarna desgewenst 3DBAG.</li>
           <li>Sluit panden uit, pas hoogten aan en exporteer naar IFC.</li>
         </ol>
-        <p class="privacy-note">IFC-bestanden en bewerkingen blijven lokaal in je browser. Alleen openbare BAG- en 3DBAG-data worden via hun API opgehaald.</p>
+        <p class="privacy-note">IFC-bestanden en bewerkingen blijven lokaal in je browser. Alleen openbare kaart-, adres-, BAG- en 3DBAG-verzoeken worden via internet opgehaald; je IFC-bestand wordt nooit verstuurd.</p>
       </section>
 
       <details class="card" open>
@@ -53,42 +53,42 @@
       <details class="card" open>
         <summary>2. Exportgebied tekenen</summary>
         <div class="details-content">
-          <div class="button-grid three">
-            <button id="polygonBtn" class="secondary-button" type="button">Vrije vorm</button>
-            <button id="rectangleBtn" class="secondary-button" type="button">Rechthoek</button>
-            <button id="circleMapBtn" class="secondary-button" type="button">Cirkel op kaart</button>
+          <div class="draw-tool-grid" role="group" aria-label="Kies de vorm van het exportgebied">
+            <button id="polygonToolBtn" class="draw-tool-button" type="button" title="Vrije vorm" aria-label="Vrije vorm">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M9 34 14 12l19-4 7 18-12 13-19-5Z"/><circle cx="14" cy="12" r="2.8"/><circle cx="33" cy="8" r="2.8"/><circle cx="40" cy="26" r="2.8"/><circle cx="28" cy="39" r="2.8"/><circle cx="9" cy="34" r="2.8"/></svg>
+              <span class="sr-only">Vrije vorm</span>
+            </button>
+            <button id="rectangleToolBtn" class="draw-tool-button" type="button" title="Rechthoek" aria-label="Rechthoek">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="9" y="12" width="30" height="24" rx="1"/><circle cx="9" cy="12" r="2.8"/><circle cx="39" cy="36" r="2.8"/></svg>
+              <span class="sr-only">Rechthoek</span>
+            </button>
+            <button id="circleToolBtn" class="draw-tool-button" type="button" title="Cirkel" aria-label="Cirkel">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="15"/><circle cx="24" cy="24" r="2.8"/><path d="M24 24h15"/></svg>
+              <span class="sr-only">Cirkel</span>
+            </button>
           </div>
 
-          <div class="subpanel">
-            <div class="minor-title">Cirkel met RD-middelpunt en straal</div>
-            <div class="form-grid two">
-              <label>RD X / Easting
-                <input id="circleX" type="number" step="0.01" inputmode="decimal" placeholder="bijv. 155000">
-              </label>
-              <label>RD Y / Northing
-                <input id="circleY" type="number" step="0.01" inputmode="decimal" placeholder="bijv. 463000">
-              </label>
-              <label>Straal in meter
-                <input id="circleRadius" type="number" min="1" step="1" value="250">
-              </label>
-              <div class="field-actions">
-                <button id="useMapCenterBtn" class="small-button" type="button">Kaartmiddelpunt</button>
-                <button id="useIfcCenterBtn" class="small-button" type="button">IFC-positie</button>
-              </div>
-            </div>
-            <button id="makeCircleBtn" class="secondary-button full" type="button">Cirkel maken of verversen</button>
-          </div>
-
-          <div id="drawControls" class="draw-controls hidden">
-            <div id="drawInstruction" class="draw-instruction"></div>
-            <div class="inline-actions">
-              <button id="finishDrawBtn" class="primary-button small hidden" type="button">Voltooien</button>
-              <button id="cancelDrawBtn" class="secondary-button small" type="button">Annuleren</button>
+          <div id="polygonOptions" class="tool-options hidden">
+            <div class="button-grid two no-bottom-margin">
+              <button id="polygonStartBtn" class="primary-button" type="button">Start</button>
+              <button id="polygonStopBtn" class="secondary-button" type="button" disabled>Stop</button>
             </div>
           </div>
 
-          <div id="areaStatus" class="status neutral">Nog geen exportgebied getekend</div>
-          <button id="clearAreaBtn" class="link-button danger-link" type="button">Exportgebied wissen</button>
+          <div id="circleOptions" class="tool-options hidden">
+            <div class="tool-options-title">Cirkel</div>
+            <label>Straal
+              <div class="input-with-unit"><input id="circleRadius" type="number" min="1" step="1" value="250"><span>m</span></div>
+            </label>
+            <button id="circlePickBtn" class="primary-button full tool-action" type="button">Kies middelpunt op kaart</button>
+          </div>
+
+          <div class="area-status-row">
+            <div id="areaStatus" class="status neutral">Nog geen exportgebied getekend</div>
+            <button id="clearAreaBtn" class="icon-button danger-icon" type="button" title="Exportgebied wissen" aria-label="Exportgebied wissen" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>
+            </button>
+          </div>
         </div>
       </details>
 
@@ -116,7 +116,7 @@
           <label class="check"><input id="includeDemolished" type="checkbox"> Ook BAG-panden met status ‘gesloopt’ laden</label>
           <label class="check"><input id="bag2dToggle" type="checkbox" checked> BAG 2D tonen</label>
           <label class="check"><input id="bag3dToggle" type="checkbox"> 3D-voorvertoning tonen</label>
-          <p class="help-text">De kaartvoorvertoning gebruikt de 3DBAG-maaiveld- en dakhoogte als gebouwmassa. Bij IFC-export wordt waar beschikbaar de echte CityJSON-LoD-geometrie gebruikt, inclusief dakvlakken.</p>
+          <p class="help-text">De kaartvoorvertoning gebruikt de 3DBAG-maaiveld- en dakhoogte als gebouwmassa. Bij IFC-export wordt waar beschikbaar de echte CityJSON-LoD-geometrie gebruikt, inclusief dakvlakken. De app gebruikt automatisch een browsercompatibiliteitsroute wanneer de 3DBAG-bron rechtstreekse browsertoegang blokkeert.</p>
 
           <div id="bagStatus" class="status neutral">Nog geen BAG-data geladen</div>
           <div id="bagStats" class="stats-grid hidden"></div>
@@ -199,6 +199,18 @@
 
     <section class="map-wrap">
       <div id="map" aria-label="Interactieve kaart"></div>
+
+      <form id="addressSearchForm" class="address-search" autocomplete="off" role="search">
+        <div class="address-search-input-wrap">
+          <svg class="address-search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg>
+          <input id="addressSearchInput" type="search" placeholder="Zoek adres of postcode" aria-label="Zoek adres of postcode" spellcheck="false">
+          <button id="addressSearchButton" type="submit" title="Adres zoeken" aria-label="Adres zoeken">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </button>
+        </div>
+        <div id="addressResults" class="address-results hidden" role="listbox" aria-label="Adresresultaten"></div>
+      </form>
+
       <div id="loading" class="loading hidden" role="status" aria-live="polite">
         <span class="spinner" aria-hidden="true"></span>
         <span id="loadingText">Bezig…</span>
@@ -212,6 +224,6 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.15.0/dist/proj4.js"></script>
-  <script type="module" src="./app.js?v=2.0.0"></script>
+  <script type="module" src="./app.js?v=2.1.0"></script>
 </body>
 </html>

@@ -9,6 +9,16 @@ GeoBIM vraagt pandgeometrie op via de PDOK Basisregistratie Adressen en Gebouwen
 - Licentie: Public Domain Mark 1.0
 - Actualisatie: dagelijks volgens de PDOK-dienstbeschrijving
 
+## Adreszoeker
+
+De adres- en postcodezoeker gebruikt de PDOK Location API.
+
+- Aanbieder: Kadaster / PDOK
+- Dienst: `https://api.pdok.nl/kadaster/location-api/v1/search`
+- Geactiveerde collectie: `adres`, versie 1
+- Licentie: CC BY 4.0
+- Authenticatie: niet vereist
+
 ## 3DBAG
 
 GeoBIM vraagt individuele gebouwen of gebouwen binnen een bounding box op via de 3DBAG API. De 3D-geometrie wordt geleverd als CityJSONFeature in EPSG:7415.
@@ -17,6 +27,17 @@ GeoBIM vraagt individuele gebouwen of gebouwen binnen een bounding box op via de
 - Makers: 3D geoinformation research group TU Delft en 3DGI
 - Licentie: CC BY 4.0
 - Verplichte bronvermelding: 3DBAG © TU Delft 3D Geoinformation group en 3DGI, CC BY 4.0
+
+### CORS-compatibiliteit voor GitHub Pages
+
+De 3DBAG API kan vanuit een statische browserapp door CORS worden geblokkeerd. GeoBIM probeert daarom automatisch:
+
+1. AllOrigins raw: `https://api.allorigins.win/raw`;
+2. CORSproxy.nl: `https://corsproxy.nl`;
+3. CorsProxy.io: `https://corsproxy.io`;
+4. rechtstreeks via `https://api.3dbag.nl` als laatste terugval.
+
+Deze diensten ontvangen alleen de openbare 3DBAG-aanvraag-URL met een bounding box of BAG-identificatie. IFC-bestanden, lokale wijzigingen en geëxporteerde IFC-bestanden worden niet via deze diensten verstuurd. Het zijn externe gratis diensten; beschikbaarheid en gebruiksvoorwaarden kunnen veranderen.
 
 ## Kaarten
 
