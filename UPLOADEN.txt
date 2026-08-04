@@ -1,10 +1,12 @@
-1. Verwijder eventueel de oude repository en maak een nieuwe openbare repository 'geobim'.
-2. Pak deze ZIP uit.
-3. Upload ALLE BESTANDEN uit de uitgepakte map naar de hoofdmap van de repository.
-4. Ga naar Settings > Pages.
-5. Kies Deploy from a branch.
-6. Kies branch main en map /(root).
-7. Klik Save.
-8. Open https://joephub.github.io/geobim/
+GEOBIM V1.2.0 UPLOADEN
 
-Belangrijk: kies NIET voor GitHub Actions. Er is geen buildproces nodig.
+1. Pak deze ZIP uit.
+2. Open de GitHub-repository geobim.
+3. Kies Add file > Upload files.
+4. Sleep ALLE bestanden uit deze map naar GitHub.
+5. Laat GitHub de bestaande bestanden vervangen en klik op Commit changes.
+6. Laat Settings > Pages staan op Deploy from a branch, main en /(root).
+7. Wacht op de Pages-publicatie.
+8. Open de website opnieuw. In de titel moet v1.2.0 staan.
+
+Je hoeft de repository niet opnieuw te verwijderen.

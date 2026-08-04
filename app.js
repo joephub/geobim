@@ -1,10 +1,12 @@
 import * as WebIFC from "https://cdn.jsdelivr.net/npm/web-ifc@0.0.77/+esm";
 
+const APP_VERSION = "1.2.0";
 const $ = (id) => document.getElementById(id);
 const input = $("ifcInput");
 const modelsEl = $("models");
 const overall = $("overallStatus");
 const loading = $("loading");
+const layerStatus = $("layerStatus");
 const state = { models: [], counter: 0 };
 
 proj4.defs("EPSG:28992", "+proj=sterea +lat_0=52.15616055555555 +lon_0=5.38763888888889 +k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel +towgs84=565.4171,50.3319,465.5524,-0.398957,0.343988,-1.8774,4.0725 +units=m +no_defs");
@@ -14,32 +16,314 @@ const map = new maplibregl.Map({
   container: "map",
   style: {
     version: 8,
-    sources: { osm: { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap contributors" } },
+    glyphs: "https://api.pdok.nl/kadaster/brk-kadastrale-kaart/ogc/v1/resources/fonts/{fontstack}/{range}.pbf",
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors"
+      }
+    },
     layers: [{ id: "osm", type: "raster", source: "osm" }]
   },
-  center: [5.3, 52.15], zoom: 7
+  center: [5.3, 52.15],
+  zoom: 7
 });
 map.addControl(new maplibregl.NavigationControl(), "top-right");
 
+const pdokOverlays = {
+  bgt: {
+    label: "BGT-achtergrond",
+    prefix: "pdok-bgt",
+    order: 10,
+    opacity: 0.76,
+    includeSymbols: false,
+    attribution: "Kadaster, Basisregistratie Grootschalige Topografie (BGT)",
+    styleUrls: [
+      "https://api.pdok.nl/lv/bgt/ogc/v1/styles/bgt_achtergrondvisualisatie__webmercatorquad?f=mapbox",
+      "https://api.pdok.nl/lv/bgt/ogc/v1/styles/bgt_achtergrondvisualisatie__webmercatorquad?f=json"
+    ],
+    loaded: false,
+    loading: null,
+    layerIds: []
+  },
+  kadaster: {
+    label: "Kadastrale kaart",
+    prefix: "pdok-kadaster",
+    order: 20,
+    opacity: 0.92,
+    includeSymbols: true,
+    attribution: "Kadaster, Kadastrale kaart",
+    styleUrls: [
+      "https://api.pdok.nl/kadaster/brk-kadastrale-kaart/ogc/v1/styles/standaardvisualisatie__webmercatorquad?f=mapbox",
+      "https://api.pdok.nl/kadaster/brk-kadastrale-kaart/ogc/v1/styles/standaardvisualisatie__webmercatorquad?f=json"
+    ],
+    loaded: false,
+    loading: null,
+    layerIds: []
+  }
+};
+
 map.on("load", () => {
-  addRaster("luchtfoto", "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg", false);
-  addRaster("bgt", "https://service.pdok.nl/lv/bgt/achtergrondvisualisatie/wmts/v1_0/standaard/EPSG:3857/{z}/{x}/{y}.png", false);
-  addRaster("kadaster", "https://service.pdok.nl/kadaster/kadastralekaart/wmts/v5_0/standaard/EPSG:3857/{z}/{x}/{y}.png", false);
+  addRaster(
+    "luchtfoto",
+    "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg",
+    false,
+    "PDOK actuele luchtfoto"
+  );
 });
-function addRaster(id, url, visible){
-  if(map.getSource(id)) return;
-  map.addSource(id,{type:"raster",tiles:[url],tileSize:256});
-  map.addLayer({id,type:"raster",source:id,layout:{visibility:visible?"visible":"none"},paint:{"raster-opacity":id==="luchtfoto"?1:.75}});
+
+function addRaster(id, url, visible, attribution = "") {
+  if (map.getSource(id)) return;
+  map.addSource(id, {
+    type: "raster",
+    tiles: [url],
+    tileSize: 256,
+    attribution
+  });
+  map.addLayer({
+    id,
+    type: "raster",
+    source: id,
+    layout: { visibility: visible ? "visible" : "none" },
+    paint: { "raster-opacity": 1 }
+  });
 }
-$("baseLayer").addEventListener("change", e => {
-  const aerial=e.target.value==="luchtfoto";
-  map.setLayoutProperty("osm","visibility",aerial?"none":"visible");
-  map.setLayoutProperty("luchtfoto","visibility",aerial?"visible":"none");
+
+$("baseLayer").addEventListener("change", (event) => {
+  const aerial = event.target.value === "luchtfoto";
+  if (map.getLayer("osm")) map.setLayoutProperty("osm", "visibility", aerial ? "none" : "visible");
+  if (map.getLayer("luchtfoto")) map.setLayoutProperty("luchtfoto", "visibility", aerial ? "visible" : "none");
 });
-$("bgtToggle").addEventListener("change",e=>map.setLayoutProperty("bgt","visibility",e.target.checked?"visible":"none"));
-$("kadasterToggle").addEventListener("change",e=>map.setLayoutProperty("kadaster","visibility",e.target.checked?"visible":"none"));
-$("clearBtn").addEventListener("click",clearAll);
-input.addEventListener("change", async e => { for(const file of e.target.files) await loadIfc(file); input.value=""; });
+
+$("bgtToggle").addEventListener("change", (event) => handleOverlayToggle("bgt", event.target));
+$("kadasterToggle").addEventListener("change", (event) => handleOverlayToggle("kadaster", event.target));
+$("clearBtn").addEventListener("click", clearAll);
+input.addEventListener("change", async (event) => {
+  for (const file of event.target.files) await loadIfc(file);
+  input.value = "";
+});
+
+async function handleOverlayToggle(key, checkbox) {
+  const overlay = pdokOverlays[key];
+  if (!checkbox.checked) {
+    setOverlayVisibility(key, false);
+    showLayerStatus(`${overlay.label} uitgeschakeld.`, "neutral", 1800);
+    return;
+  }
+
+  checkbox.disabled = true;
+  showLayerStatus(`${overlay.label} laden…`, "loading-state");
+  try {
+    await ensureOverlayLoaded(key);
+    setOverlayVisibility(key, checkbox.checked);
+    if (map.getZoom() < 17) {
+      showLayerStatus(`${overlay.label} is geladen. Zoom verder in; deze detailkaart verschijnt vanaf zoomniveau 17.`, "warn-state", 6500);
+    } else {
+      showLayerStatus(`${overlay.label} is geladen.`, "good-state", 2500);
+    }
+  } catch (error) {
+    checkbox.checked = false;
+    setOverlayVisibility(key, false);
+    showLayerStatus(`${overlay.label} kon niet worden geladen: ${error.message}`, "bad-state");
+    console.error(`${overlay.label} kon niet worden geladen`, error);
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+
+async function ensureOverlayLoaded(key) {
+  const overlay = pdokOverlays[key];
+  if (overlay.loaded) return;
+  if (overlay.loading) return overlay.loading;
+
+  overlay.loading = (async () => {
+    const style = await fetchMapboxStyle(overlay.styleUrls);
+    const sourceIds = new Map();
+
+    for (const [sourceId, definition] of Object.entries(style.sources || {})) {
+      const targetSourceId = `${overlay.prefix}-source-${safeId(sourceId)}`;
+      sourceIds.set(sourceId, targetSourceId);
+      if (map.getSource(targetSourceId)) continue;
+
+      const source = deepClone(definition);
+      if (Array.isArray(source.tiles)) {
+        source.tiles = source.tiles.map((url) => resolveTemplateUrl(url, overlay.styleUrls[0]));
+      }
+      if (source.url) source.url = resolveTemplateUrl(source.url, overlay.styleUrls[0]);
+      source.attribution = [source.attribution, overlay.attribution].filter(Boolean).join(" · ");
+      map.addSource(targetSourceId, source);
+    }
+
+    let added = 0;
+    let skipped = 0;
+    for (let index = 0; index < (style.layers || []).length; index += 1) {
+      const original = style.layers[index];
+      if (!original.source || original.type === "background") continue;
+      if (!sourceIds.has(original.source)) continue;
+      if (!overlay.includeSymbols && original.type === "symbol") {
+        skipped += 1;
+        continue;
+      }
+      if (layerNeedsSprite(original)) {
+        skipped += 1;
+        continue;
+      }
+
+      const layer = deepClone(original);
+      layer.id = `${overlay.prefix}-layer-${String(index).padStart(3, "0")}-${safeId(original.id)}`;
+      layer.source = sourceIds.get(original.source);
+      layer.layout = { ...(layer.layout || {}), visibility: "none" };
+      delete layer.slot;
+      applyOpacity(layer, overlay.opacity);
+
+      try {
+        map.addLayer(layer, findInsertBefore(overlay.order));
+        overlay.layerIds.push(layer.id);
+        added += 1;
+      } catch (error) {
+        skipped += 1;
+      }
+    }
+
+    if (!added) {
+      throw new Error("de officiële PDOK-stijl bevatte geen bruikbare kaartlagen");
+    }
+
+    overlay.loaded = true;
+    if (skipped) {
+      console.info(`${overlay.label}: ${added} lagen toegevoegd; ${skipped} niet-essentiële lagen overgeslagen.`);
+    }
+  })().finally(() => {
+    overlay.loading = null;
+  });
+
+  return overlay.loading;
+}
+
+async function fetchMapboxStyle(urls) {
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "application/vnd.mapbox.style+json, application/json;q=0.9" },
+        cache: "no-cache"
+      });
+      if (!response.ok) throw new Error(`PDOK antwoordde met HTTP ${response.status}`);
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("json") && !contentType.includes("mapbox")) {
+        throw new Error("PDOK stuurde geen JSON-stijl terug");
+      }
+      const style = await response.json();
+      if (style.version !== 8 || !style.sources || !Array.isArray(style.layers)) {
+        throw new Error("de ontvangen kaartstijl is ongeldig");
+      }
+      return style;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("kaartstijl niet bereikbaar");
+}
+
+function setOverlayVisibility(key, visible) {
+  const overlay = pdokOverlays[key];
+  for (const layerId of overlay.layerIds) {
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+    }
+  }
+}
+
+function findInsertBefore(order) {
+  const styleLayers = map.getStyle()?.layers || [];
+  const higherOverlay = Object.values(pdokOverlays)
+    .filter((item) => item.order > order && item.layerIds.length)
+    .sort((a, b) => a.order - b.order)
+    .flatMap((item) => item.layerIds)
+    .find((id) => map.getLayer(id));
+  if (higherOverlay) return higherOverlay;
+  return styleLayers.find((layer) => /^model-\d+-(fill|line)$/.test(layer.id))?.id;
+}
+
+function layerNeedsSprite(layer) {
+  const layout = layer.layout || {};
+  const paint = layer.paint || {};
+  return Object.prototype.hasOwnProperty.call(layout, "icon-image") ||
+    Object.prototype.hasOwnProperty.call(paint, "fill-pattern") ||
+    Object.prototype.hasOwnProperty.call(paint, "line-pattern") ||
+    Object.prototype.hasOwnProperty.call(paint, "background-pattern");
+}
+
+function applyOpacity(layer, multiplier) {
+  const properties = {
+    fill: ["fill-opacity"],
+    line: ["line-opacity"],
+    circle: ["circle-opacity", "circle-stroke-opacity"],
+    symbol: ["text-opacity", "icon-opacity"],
+    "fill-extrusion": ["fill-extrusion-opacity"],
+    heatmap: ["heatmap-opacity"]
+  }[layer.type] || [];
+
+  layer.paint = layer.paint || {};
+  for (const property of properties) {
+    const current = layer.paint[property];
+    if (current === undefined) {
+      layer.paint[property] = multiplier;
+    } else if (typeof current === "number") {
+      layer.paint[property] = current * multiplier;
+    } else {
+      layer.paint[property] = ["*", current, multiplier];
+    }
+  }
+}
+
+function resolveTemplateUrl(value, base) {
+  if (typeof value !== "string" || /^https?:\/\//i.test(value)) return value;
+  const placeholders = [];
+  const masked = value.replace(/\{[^}]+\}/g, (match) => {
+    const token = `__GEOBIM_TEMPLATE_${placeholders.length}__`;
+    placeholders.push(match);
+    return token;
+  });
+  const resolved = new URL(masked, base).href;
+  return placeholders.reduce((url, placeholder, index) => url.replace(`__GEOBIM_TEMPLATE_${index}__`, placeholder), resolved);
+}
+
+function safeId(value) {
+  return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "laag";
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+let layerStatusTimer = null;
+function showLayerStatus(message, type = "neutral", hideAfter = 0) {
+  if (!layerStatus) return;
+  clearTimeout(layerStatusTimer);
+  layerStatus.textContent = message;
+  layerStatus.className = `layer-status ${type}`;
+  if (hideAfter) {
+    layerStatusTimer = setTimeout(() => {
+      layerStatus.className = "layer-status hidden";
+    }, hideAfter);
+  }
+}
+
+const reportedMapErrors = new Set();
+map.on("error", (event) => {
+  const sourceId = event?.sourceId || "kaart";
+  const rawMessage = event?.error?.message || String(event?.error || "Onbekende kaartfout");
+  const normalized = rawMessage
+    .replace(/https?:\/\/\S+/g, "[kaartbron]")
+    .replace(/\b\d{4,}\b/g, "#");
+  const key = `${sourceId}:${normalized}`;
+  if (reportedMapErrors.has(key)) return;
+  reportedMapErrors.add(key);
+  console.warn(`Kaartmelding (${sourceId}): ${rawMessage}`);
+});
 
 async function loadIfc(file){
   loading.classList.remove("hidden");

@@ -7,12 +7,12 @@
   <link rel="icon" href="data:,">
   <title>GeoBIM IFC-controle</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
-  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./style.css?v=1.2.0">
 </head>
 <body>
   <header class="topbar">
     <div>
-      <h1>GeoBIM</h1>
+      <h1>GeoBIM <span class="version">v1.2.0</span></h1>
       <p>Laad een IFC en controleer direct waar het model volgens de aanwezige georeferentie ligt.</p>
     </div>
     <label class="upload-button">
@@ -46,6 +46,8 @@
         </select>
         <label class="check"><input id="bgtToggle" type="checkbox"> BGT-achtergrond</label>
         <label class="check"><input id="kadasterToggle" type="checkbox"> Kadastrale kaart</label>
+        <p class="layer-hint">BGT en Kadastrale kaart zijn detailkaarten en worden zichtbaar vanaf zoomniveau 17.</p>
+        <div id="layerStatus" class="layer-status hidden" role="status" aria-live="polite"></div>
       </section>
 
       <section class="card legend">
@@ -65,6 +67,6 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.15.0/dist/proj4.js"></script>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=1.2.0"></script>
 </body>
 </html>
