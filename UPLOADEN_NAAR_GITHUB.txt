@@ -1,0 +1,30 @@
+GEOBIM V2.0.0 OP GITHUB PAGES ZETTEN
+
+1. Pak deze ZIP uit op je computer.
+2. Open de GitHub-repository joephub/geobim.
+3. Ga naar Code > Add file > Upload files.
+4. Sleep ALLE bestanden uit de uitgepakte map naar GitHub.
+   Upload niet de ZIP zelf en plaats de bestanden niet in een extra bovenliggende map.
+5. Laat bestaande bestanden met dezelfde naam overschrijven.
+6. Verwijder een eventuele oude map .github/workflows uit de repository.
+7. Commit de wijzigingen.
+8. Ga naar Settings > Pages.
+9. Kies bij Source: Deploy from a branch.
+10. Kies Branch: main en Folder: /(root).
+11. Klik Save.
+12. Wacht enkele minuten en open https://joephub.github.io/geobim/
+13. Controleer dat bovenaan GeoBIM v2.0.0 staat.
+14. Staat nog een oude versie in beeld, druk dan op Ctrl+F5.
+
+In de hoofdmap van de repository moeten direct staan:
+
+- index.html
+- style.css
+- app.js
+- core.js
+- README.md
+- BRONNEN_EN_LICENTIES.md
+- VERSIE.txt
+- .nojekyll
+
+Er is geen npm, Vite, Node.js of GitHub Actions nodig.

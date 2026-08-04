@@ -1,1 +1,15 @@
-1.2.0
+GeoBIM v2.0.0
+Build: 2026-08-04
+
+Nieuw in deze versie:
+- officiële BAG 2D-opvraag via PDOK OGC API v2;
+- 3DBAG CityJSON-opvraag per gebied en per pand;
+- LoD 1.2, 1.3 en 2.2;
+- 3D-massavoorvertoning op de kaart;
+- pand aanklikken, lokaal verwijderen en terugzetten;
+- exporthoogte per pand aanpassen;
+- exportgebied als cirkel, RD-middelpunt + straal, rechthoek of vrije vorm;
+- selectie op snijvlak of gebouwmiddelpunt;
+- IFC4-export met IfcProjectedCRS, IfcMapConversion en IfcTriangulatedFaceSet;
+- IFC2X3 ePSet-georeferentieherkenning;
+- BGT en Kadastrale Kaart via actuele PDOK OGC API Styles/Tiles.

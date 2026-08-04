@@ -2,71 +2,216 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Eenvoudige IFC-georeferentiecontrole op kaart">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="GeoBIM: IFC-georeferentie controleren, BAG en 3DBAG selecteren en als geogerefereerde IFC exporteren.">
+  <meta name="color-scheme" content="light">
   <link rel="icon" href="data:,">
-  <title>GeoBIM IFC-controle</title>
+  <title>GeoBIM — IFC, BAG en 3DBAG</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
-  <link rel="stylesheet" href="./style.css?v=1.2.0">
+  <link rel="stylesheet" href="./style.css?v=2.0.0">
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <h1>GeoBIM <span class="version">v1.2.0</span></h1>
-      <p>Laad een IFC en controleer direct waar het model volgens de aanwezige georeferentie ligt.</p>
+    <div class="brand">
+      <div class="brand-line">
+        <h1>GeoBIM</h1>
+        <span class="version">v2.0.0</span>
+      </div>
+      <p>Controleer IFC-georeferentie en maak een geogerefereerd IFC-contextmodel uit BAG en 3DBAG.</p>
     </div>
-    <label class="upload-button">
+    <label class="primary-button upload-button">
       <input id="ifcInput" type="file" accept=".ifc" multiple>
       IFC-model(len) kiezen
     </label>
   </header>
 
   <main class="layout">
-    <aside class="panel">
-      <section class="card intro">
-        <h2>Georeferentiecontrole</h2>
-        <p>De bestanden blijven lokaal in je browser. De app wijzigt of uploadt niets.</p>
-        <div id="overallStatus" class="status neutral">Nog geen IFC geladen</div>
+    <aside class="panel" aria-label="Bedieningspaneel">
+      <section class="card intro-card">
+        <h2>Werkwijze</h2>
+        <ol class="steps">
+          <li>Laad eventueel een IFC om de ligging te controleren.</li>
+          <li>Teken het gewenste exportgebied.</li>
+          <li>Laad BAG 2D en daarna desgewenst 3DBAG.</li>
+          <li>Sluit panden uit, pas hoogten aan en exporteer naar IFC.</li>
+        </ol>
+        <p class="privacy-note">IFC-bestanden en bewerkingen blijven lokaal in je browser. Alleen openbare BAG- en 3DBAG-data worden via hun API opgehaald.</p>
       </section>
 
-      <section class="card">
-        <div class="section-title">
-          <h2>Modellen</h2>
-          <button id="clearBtn" class="link-button" type="button">Alles verwijderen</button>
+      <details class="card" open>
+        <summary>1. IFC-georeferentie controleren</summary>
+        <div class="details-content">
+          <div id="overallStatus" class="status neutral">Nog geen IFC geladen</div>
+          <div class="section-title compact-title">
+            <span class="minor-title">Modellen</span>
+            <button id="clearIfcBtn" class="link-button" type="button">Alles verwijderen</button>
+          </div>
+          <div id="models" class="models empty">Kies bovenaan één of meerdere IFC-bestanden.</div>
         </div>
-        <div id="models" class="models empty">Kies één of meerdere IFC-bestanden.</div>
+      </details>
+
+      <details class="card" open>
+        <summary>2. Exportgebied tekenen</summary>
+        <div class="details-content">
+          <div class="button-grid three">
+            <button id="polygonBtn" class="secondary-button" type="button">Vrije vorm</button>
+            <button id="rectangleBtn" class="secondary-button" type="button">Rechthoek</button>
+            <button id="circleMapBtn" class="secondary-button" type="button">Cirkel op kaart</button>
+          </div>
+
+          <div class="subpanel">
+            <div class="minor-title">Cirkel met RD-middelpunt en straal</div>
+            <div class="form-grid two">
+              <label>RD X / Easting
+                <input id="circleX" type="number" step="0.01" inputmode="decimal" placeholder="bijv. 155000">
+              </label>
+              <label>RD Y / Northing
+                <input id="circleY" type="number" step="0.01" inputmode="decimal" placeholder="bijv. 463000">
+              </label>
+              <label>Straal in meter
+                <input id="circleRadius" type="number" min="1" step="1" value="250">
+              </label>
+              <div class="field-actions">
+                <button id="useMapCenterBtn" class="small-button" type="button">Kaartmiddelpunt</button>
+                <button id="useIfcCenterBtn" class="small-button" type="button">IFC-positie</button>
+              </div>
+            </div>
+            <button id="makeCircleBtn" class="secondary-button full" type="button">Cirkel maken of verversen</button>
+          </div>
+
+          <div id="drawControls" class="draw-controls hidden">
+            <div id="drawInstruction" class="draw-instruction"></div>
+            <div class="inline-actions">
+              <button id="finishDrawBtn" class="primary-button small hidden" type="button">Voltooien</button>
+              <button id="cancelDrawBtn" class="secondary-button small" type="button">Annuleren</button>
+            </div>
+          </div>
+
+          <div id="areaStatus" class="status neutral">Nog geen exportgebied getekend</div>
+          <button id="clearAreaBtn" class="link-button danger-link" type="button">Exportgebied wissen</button>
+        </div>
+      </details>
+
+      <details class="card" open>
+        <summary>3. BAG en 3DBAG</summary>
+        <div class="details-content">
+          <div class="button-grid two">
+            <button id="loadBagBtn" class="primary-button" type="button">BAG 2D laden</button>
+            <button id="load3dBtn" class="secondary-button" type="button" disabled>3DBAG laden</button>
+          </div>
+
+          <div class="form-grid two compact-fields">
+            <label>3DBAG-detailniveau
+              <select id="lodSelect">
+                <option value="2.2" selected>LoD 2.2 — dakvlakken</option>
+                <option value="1.3">LoD 1.3 — meerdere dakhoogten</option>
+                <option value="1.2">LoD 1.2 — eenvoudige massa</option>
+              </select>
+            </label>
+            <label>Standaardhoogte zonder 3D
+              <div class="input-with-unit"><input id="defaultHeight" type="number" min="0.1" step="0.1" value="10"><span>m</span></div>
+            </label>
+          </div>
+
+          <label class="check"><input id="includeDemolished" type="checkbox"> Ook BAG-panden met status ‘gesloopt’ laden</label>
+          <label class="check"><input id="bag2dToggle" type="checkbox" checked> BAG 2D tonen</label>
+          <label class="check"><input id="bag3dToggle" type="checkbox"> 3D-voorvertoning tonen</label>
+          <p class="help-text">De kaartvoorvertoning gebruikt de 3DBAG-maaiveld- en dakhoogte als gebouwmassa. Bij IFC-export wordt waar beschikbaar de echte CityJSON-LoD-geometrie gebruikt, inclusief dakvlakken.</p>
+
+          <div id="bagStatus" class="status neutral">Nog geen BAG-data geladen</div>
+          <div id="bagStats" class="stats-grid hidden"></div>
+
+          <div class="inline-actions wrap">
+            <button id="restoreAllBtn" class="small-button" type="button" disabled>Alle verwijderde panden terugzetten</button>
+            <button id="clearBagBtn" class="small-button" type="button" disabled>BAG-data wissen</button>
+          </div>
+        </div>
+      </details>
+
+      <details id="selectedDetails" class="card" open>
+        <summary>4. Geselecteerd pand</summary>
+        <div id="selectedEmpty" class="details-content empty-state">Klik op een BAG-pand op de kaart.</div>
+        <div id="selectedBuilding" class="details-content hidden">
+          <dl id="selectedMeta" class="property-list"></dl>
+          <label>Exporthoogte aanpassen
+            <div class="input-with-unit"><input id="heightOverride" type="number" min="0.1" step="0.1"><span>m</span></div>
+          </label>
+          <div class="button-grid two">
+            <button id="applyHeightBtn" class="secondary-button" type="button">Hoogte toepassen</button>
+            <button id="resetHeightBtn" class="secondary-button" type="button">Bronhoogte herstellen</button>
+          </div>
+          <div class="button-grid two">
+            <button id="loadSelected3dBtn" class="secondary-button" type="button">3D van dit pand laden</button>
+            <button id="excludeBuildingBtn" class="danger-button" type="button">Pand verwijderen uit export</button>
+          </div>
+          <p class="help-text">Verwijderen wijzigt de officiële BAG- of 3DBAG-bron niet. Het pand wordt alleen lokaal uit deze export gehaald en kan altijd worden teruggezet.</p>
+        </div>
+      </details>
+
+      <details class="card" open>
+        <summary>5. Exporteren naar IFC</summary>
+        <div class="details-content">
+          <label>Bestandsnaam
+            <input id="exportName" type="text" value="geobim-bag-context.ifc" spellcheck="false">
+          </label>
+          <label>Selectieregel aan de grens
+            <select id="selectionMode">
+              <option value="intersects" selected>Volledig pand meenemen zodra het gebied het raakt</option>
+              <option value="centroid">Alleen als het middelpunt binnen het gebied ligt</option>
+            </select>
+          </label>
+          <label class="check"><input id="fetchMissing3d" type="checkbox" checked> Ontbrekende 3DBAG-geometrie bij export automatisch ophalen, tot maximaal 100 panden</label>
+          <button id="exportIfcBtn" class="primary-button full" type="button" disabled>Geselecteerde panden exporteren naar IFC</button>
+          <div id="exportStatus" class="status neutral">Teken een gebied en laad BAG 2D.</div>
+          <p class="help-text"><strong>Grensgedrag:</strong> gebouwen worden als geheel geëxporteerd; de geometrie wordt niet langs een cirkel, rechthoek of vrije lijn doorgesneden. De selectiecontour bepaalt alleen welke volledige panden worden meegenomen.</p>
+        </div>
+      </details>
+
+      <details class="card">
+        <summary>Kaartlagen</summary>
+        <div class="details-content">
+          <label>Achtergrond
+            <select id="baseLayer">
+              <option value="osm">OpenStreetMap</option>
+              <option value="luchtfoto">PDOK actuele luchtfoto</option>
+            </select>
+          </label>
+          <label class="check"><input id="bgtToggle" type="checkbox"> BGT-achtergrond</label>
+          <label class="check"><input id="kadasterToggle" type="checkbox"> Kadastrale kaart</label>
+          <p class="help-text">BGT en Kadastrale Kaart zijn detailkaarten en worden vooral zichtbaar wanneer je ver inzoomt.</p>
+          <div id="layerStatus" class="layer-status hidden" role="status" aria-live="polite"></div>
+        </div>
+      </details>
+
+      <section class="card legend-card">
+        <h2>Kleuren</h2>
+        <p><span class="legend-swatch bag-normal"></span>BAG-pand in exportselectie</p>
+        <p><span class="legend-swatch bag-3d"></span>3DBAG-data beschikbaar</p>
+        <p><span class="legend-swatch bag-selected"></span>Geselecteerd pand</p>
+        <p><span class="legend-swatch bag-excluded"></span>Verwijderd uit export</p>
       </section>
 
-      <section class="card">
-        <h2>Kaartlagen</h2>
-        <label class="field-label" for="baseLayer">Achtergrond</label>
-        <select id="baseLayer">
-          <option value="osm">OpenStreetMap</option>
-          <option value="luchtfoto">PDOK actuele luchtfoto</option>
-        </select>
-        <label class="check"><input id="bgtToggle" type="checkbox"> BGT-achtergrond</label>
-        <label class="check"><input id="kadasterToggle" type="checkbox"> Kadastrale kaart</label>
-        <p class="layer-hint">BGT en Kadastrale kaart zijn detailkaarten en worden zichtbaar vanaf zoomniveau 17.</p>
-        <div id="layerStatus" class="layer-status hidden" role="status" aria-live="polite"></div>
-      </section>
-
-      <section class="card legend">
-        <h2>Betekenis</h2>
-        <p><span class="dot good"></span><strong>Groen:</strong> native kaartconversie en herkenbaar CRS.</p>
-        <p><span class="dot warn"></span><strong>Oranje:</strong> plaatsing mogelijk, maar via een minder betrouwbare fallback.</p>
-        <p><span class="dot bad"></span><strong>Rood:</strong> onvoldoende informatie voor automatische plaatsing.</p>
-      </section>
+      <footer class="panel-footer">
+        <p>3DBAG bronvermelding: 3D geoinformation research group TU Delft en 3DGI, CC BY 4.0.</p>
+        <p>De IFC-export is een gegenereerd contextmodel. Controleer het resultaat altijd in een IFC-viewer voordat je het projectmatig gebruikt.</p>
+      </footer>
     </aside>
 
     <section class="map-wrap">
-      <div id="map"></div>
-      <div id="loading" class="loading hidden">IFC verwerken…</div>
-      <div class="map-note">De gekleurde contour is afgeleid uit de IFC-geometrie. Controleer hem visueel tegen luchtfoto, BGT of kadastrale kaart.</div>
+      <div id="map" aria-label="Interactieve kaart"></div>
+      <div id="loading" class="loading hidden" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="loadingText">Bezig…</span>
+      </div>
+      <div id="mapHint" class="map-hint hidden"></div>
+      <div class="map-note">IFC-contouren dienen voor visuele georeferentiecontrole. BAG/3DBAG-bewerkingen zijn tijdelijk en blijven alleen in deze browsersessie.</div>
     </section>
   </main>
 
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
   <script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.15.0/dist/proj4.js"></script>
-  <script type="module" src="./app.js?v=1.2.0"></script>
+  <script type="module" src="./app.js?v=2.0.0"></script>
 </body>
 </html>
