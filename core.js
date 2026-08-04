@@ -97,6 +97,50 @@ export function geometryIntersectsPolygon(geometry, areaPolygon) {
   return geometryPolygons(geometry).some((polygon) => polygonsIntersect(polygon, areaPolygon.coordinates));
 }
 
+/**
+ * Returns true when every exterior boundary of the geometry lies inside or on
+ * the boundary of the area polygon. This is intentionally stricter than an
+ * intersection test and is used to guarantee that only complete BAG footprints
+ * within a user-drawn contour are loaded.
+ */
+export function geometryWithinPolygon(geometry, areaPolygon) {
+  if (!geometry || !areaPolygon || areaPolygon.type !== "Polygon") return false;
+  const areaBbox = bboxOfGeometry(areaPolygon);
+  const geometryBbox = bboxOfGeometry(geometry);
+  if (!areaBbox || !geometryBbox || !bboxContains(areaBbox, geometryBbox)) return false;
+
+  const areaRings = areaPolygon.coordinates || [];
+  const areaOuter = stripRingClosure(areaRings[0] || []);
+  if (areaOuter.length < 3) return false;
+
+  for (const polygon of geometryPolygons(geometry)) {
+    const outer = stripRingClosure(polygon?.[0] || []);
+    if (outer.length < 3) return false;
+
+    // Every building vertex must be inside the selected contour. pointInPolygon
+    // treats points on the boundary as inside.
+    if (outer.some((point) => !pointInPolygon(point, areaRings))) return false;
+
+    // In a concave free-form selection, two vertices can both be inside while
+    // the segment between them temporarily leaves the polygon. A proper edge
+    // crossing catches that situation while still allowing a building edge to
+    // touch or follow the selection boundary.
+    for (let i = 0; i < outer.length; i += 1) {
+      const a = outer[i];
+      const b = outer[(i + 1) % outer.length];
+      for (const areaRing of areaRings) {
+        const cleanArea = stripRingClosure(areaRing || []);
+        for (let j = 0; j < cleanArea.length; j += 1) {
+          const c = cleanArea[j];
+          const d = cleanArea[(j + 1) % cleanArea.length];
+          if (segmentsProperlyIntersect(a, b, c, d)) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 export function polygonAreaApproxMeters2(polygon, projectToMetric) {
   if (!polygon || polygon.type !== "Polygon") return 0;
   const outer = stripRingClosure(polygon.coordinates?.[0] || []).map(projectToMetric);
@@ -346,7 +390,7 @@ export function buildIfc4({
   exportName = "GeoBIM BAG export",
   areaProperties = {},
   generatedAt = new Date(),
-  appVersion = "2.1.0"
+  appVersion = "2.4.0"
 }) {
   if (!Array.isArray(buildings) || !buildings.length) throw new Error("Geen gebouwen om te exporteren.");
   const safeOrigin = {
@@ -530,8 +574,23 @@ function segmentsIntersect(a, b, c, d) {
     (o4 === 0 && pointOnSegment(b, c, d));
 }
 
+function segmentsProperlyIntersect(a, b, c, d) {
+  const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const o1 = cross(a, b, c);
+  const o2 = cross(a, b, d);
+  const o3 = cross(c, d, a);
+  const o4 = cross(c, d, b);
+  const epsilon = 1e-12;
+  return ((o1 > epsilon && o2 < -epsilon) || (o1 < -epsilon && o2 > epsilon)) &&
+    ((o3 > epsilon && o4 < -epsilon) || (o3 < -epsilon && o4 > epsilon));
+}
+
 function bboxesIntersect(a, b) {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
+function bboxContains(outer, inner) {
+  return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
 }
 
 function samePoint(a, b) {

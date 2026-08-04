@@ -219,6 +219,8 @@ select { margin-bottom: 0; }
 .model-card { border-top: 1px solid #e6ebf0; padding: 11px 0; }
 .model-card:first-child { border-top: 0; }
 .model-name { font-weight: 800; font-size: 12.5px; word-break: break-word; }
+.model-status-label { margin-top: 9px; color: #6b7787; font-size: 10.5px; font-weight: 850; letter-spacing: 0.02em; text-transform: uppercase; }
+.compact-status { margin: 4px 0 7px; padding: 7px 9px; font-size: 11.3px; }
 .model-meta { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 5px 10px; margin-top: 7px; font-size: 11px; }
 .model-meta span { color: #6b7787; }
 .model-meta strong { color: #29384c; overflow-wrap: anywhere; }

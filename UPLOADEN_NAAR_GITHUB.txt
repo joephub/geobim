@@ -1,30 +1,26 @@
-GEOBIM V2.1.0 OP GITHUB PAGES ZETTEN
+GEOBIM V2.4.0 - GITHUB ALS BRON, CLOUDFLARE PAGES ALS WEBSITE
 
-1. Pak deze ZIP uit op je computer.
-2. Open de GitHub-repository joephub/geobim.
-3. Ga naar Code > Add file > Upload files.
-4. Sleep ALLE bestanden uit de uitgepakte map naar GitHub.
-   Upload niet de ZIP zelf en plaats de bestanden niet in een extra bovenliggende map.
-5. Laat bestaande bestanden met dezelfde naam overschrijven.
-6. Verwijder een eventuele oude map .github/workflows uit de repository.
-7. Commit de wijzigingen.
-8. Ga naar Settings > Pages.
-9. Kies bij Source: Deploy from a branch.
-10. Kies Branch: main en Folder: /(root).
-11. Klik Save.
-12. Wacht enkele minuten en open https://joephub.github.io/geobim/
-13. Controleer dat bovenaan GeoBIM v2.1.0 staat.
-14. Staat nog een oude versie in beeld, druk dan op Ctrl+F5.
+1. Pak de ZIP uit.
+2. Upload ALLE bestanden en mappen naar de hoofdmap van de GitHub-repository geobim.
+3. Controleer dat de map functions/api/3dbag aanwezig is.
+4. Commit de wijzigingen.
+5. Open Cloudflare > Workers & Pages.
+6. Maak een Pages-project via Git-integratie.
+7. Selecteer de GitHub-repository geobim.
+8. Production branch: main.
+9. Framework preset: None.
+10. Build command: exit 0.
+11. Build output directory: public
+12. Deploy.
+13. Open de nieuwe pages.dev-URL.
+14. Controleer dat bovenaan v2.4.0 staat.
+15. Test /api/3dbag/health achter de pages.dev-URL.
 
-In de hoofdmap van de repository moeten direct staan:
+BELANGRIJK
+- Alleen GitHub Pages is statisch en kan de 3DBAG-serverfunctie niet uitvoeren.
+- Gebruik voor de werkende app de Cloudflare Pages-URL.
+- GitHub blijft de plek waar de bronbestanden staan.
+- Er worden geen openbare CORS-proxy's gebruikt.
+- 3DBAG wordt alleen per BAG-identificatie opgehaald nadat BAG 2D exact op de getekende contour is gefilterd.
 
-- index.html
-- style.css
-- app.js
-- core.js
-- README.md
-- BRONNEN_EN_LICENTIES.md
-- VERSIE.txt
-- .nojekyll
-
-Er is geen npm, Vite, Node.js of GitHub Actions nodig.
+Zie PUBLICEREN_VIA_CLOUDFLARE_PAGES.md voor de volledige uitleg.

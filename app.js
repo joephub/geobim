@@ -2,11 +2,11 @@ import * as WebIFC from "https://cdn.jsdelivr.net/npm/web-ifc@0.0.77/+esm";
 import earcut from "https://cdn.jsdelivr.net/npm/earcut@3.0.2/+esm";
 import {
   normalizeBagId,
-  toThreeDBagId,
   bboxOfGeometry,
   geometryCentroid,
   pointInGeometry,
   geometryIntersectsPolygon,
+  geometryWithinPolygon,
   polygonAreaApproxMeters2,
   circlePolygon,
   rectanglePolygon,
@@ -18,37 +18,15 @@ import {
   scaleMeshHeight,
   meshBounds,
   buildIfc4
-} from "./core.js?v=2.1.0";
+} from "./core.js?v=2.4.0";
 
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.4.0";
 const BAG_API = "https://api.pdok.nl/kadaster/bag/ogc/v2/collections/pand/items";
-const BAG3D_API = "https://api.3dbag.nl/collections/pand/items";
+const BAG3D_SERVICE_BASE = new URL("./api/3dbag/", document.baseURI).href.replace(/\/$/, "");
 const ADDRESS_API = "https://api.pdok.nl/kadaster/location-api/v1/search";
-const THREE_DBAG_ROUTES = [
-  {
-    id: "allorigins",
-    label: "AllOrigins",
-    buildUrl: (targetUrl) => `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
-  },
-  {
-    id: "corsproxy-nl",
-    label: "CORSproxy.nl",
-    buildUrl: buildCorsProxyNlUrl
-  },
-  {
-    id: "corsproxy-io",
-    label: "CorsProxy.io",
-    buildUrl: (targetUrl) => `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`
-  },
-  {
-    id: "direct",
-    label: "3DBAG rechtstreeks",
-    buildUrl: (targetUrl) => targetUrl
-  }
-];
 const MAX_BAG_FEATURES = 3000;
-const MAX_3DBAG_FEATURES = 1200;
-const THREE_DBAG_PAGE_SIZE = 10;
+const MAX_3DBAG_FEATURES = 400;
+const THREE_DBAG_CONCURRENCY = 3;
 const MAX_AUTO_3D_FETCH = 100;
 const $ = (id) => document.getElementById(id);
 
@@ -118,11 +96,11 @@ const state = {
   bag: new Map(),
   selectedBagId: null,
   bagTruncated: false,
-  threeDTruncated: false,
-  threeDBagRouteId: null,
   addressAbortController: null,
   addressSearchTimer: null,
-  addressMarker: null
+  addressMarker: null,
+  threeDBagServiceAvailable: null,
+  threeDBagServiceCheck: null
 };
 
 proj4.defs(
@@ -169,6 +147,7 @@ map.on("load", () => {
   initializeGeoJsonLayers();
   syncBagSource();
   updateDrawToolUi();
+  for (const model of state.ifcModels) drawIfcModel(model);
 });
 
 function initializeGeoJsonLayers() {
@@ -520,6 +499,14 @@ dom.resetHeightBtn.addEventListener("click", resetSelectedHeight);
 dom.excludeBuildingBtn.addEventListener("click", toggleSelectedBuildingExcluded);
 dom.loadSelected3dBtn.addEventListener("click", loadSelectedBuilding3d);
 dom.selectionMode.addEventListener("change", () => {
+  if (state.bag.size) {
+    clearBagData({ silent: true });
+    setStatus(
+      dom.bagStatus,
+      "De selectieregel is gewijzigd. Laad BAG 2D opnieuw; daarna worden alleen panden volgens deze regel opgehaald.",
+      "info-status"
+    );
+  }
   renderBagStats();
   syncExportStatus();
 });
@@ -976,7 +963,7 @@ async function fetchBagFeatures(areaGeometry) {
     if (!feature?.geometry) continue;
     const status = String(feature?.properties?.status || "").toLowerCase();
     if (!includeDemolished && status.includes("gesloopt")) continue;
-    if (!geometryIntersectsPolygon(feature.geometry, state.area.geometry)) continue;
+    if (!matchesAreaSelectionRule(feature.geometry, areaGeometry)) continue;
     const bagId = normalizeBagId(feature?.properties?.identificatie || feature?.id);
     if (!bagId || seen.has(bagId)) continue;
     seen.add(bagId);
@@ -990,26 +977,115 @@ async function loadThreeDBagForArea() {
     setStatus(dom.bagStatus, "Laad eerst BAG 2D binnen een getekend gebied.", "warn-status");
     return;
   }
-  setBusy(true, "3DBAG-geometrie ophalen…");
-  setStatus(dom.bagStatus, "3DBAG ophalen. Bij een dicht bebouwd gebied kan dit even duren…", "info-status");
-  dom.load3dBtn.disabled = true;
+
+  const targets = getThreeDBagTargets();
+  if (!targets.length) {
+    setStatus(dom.bagStatus, "Binnen de huidige contour staan geen niet-verwijderde BAG-panden.", "warn-status");
+    return;
+  }
+  if (targets.length > MAX_3DBAG_FEATURES) {
+    setStatus(
+      dom.bagStatus,
+      `De contour bevat ${formatNumber(targets.length, 0)} panden. Verklein het gebied tot maximaal ${formatNumber(MAX_3DBAG_FEATURES, 0)} panden om 3DBAG gericht en betrouwbaar op te halen.`,
+      "bad-status"
+    );
+    return;
+  }
+
+  const pending = targets.filter((item) => !item.cityJson);
+  const alreadyLoaded = targets.length - pending.length;
+  if (!pending.length) {
+    dom.bag3dToggle.checked = true;
+    updateBagLayerVisibility();
+    setStatus(dom.bagStatus, `${formatNumber(alreadyLoaded, 0)} panden binnen de contour hebben al 3DBAG-geometrie.`, "good-status");
+    return;
+  }
+
   try {
-    const { wrappers, truncated } = await fetchThreeDBagByBbox(state.area.geometry);
-    state.threeDTruncated = truncated;
-    let matched = 0;
-    for (const wrapper of wrappers) {
-      if (applyCityJsonWrapper(wrapper)) matched += 1;
-    }
+    await ensureThreeDBagService();
+  } catch (error) {
+    console.error("GeoBIM 3DBAG-service niet beschikbaar", error);
+    setStatus(dom.bagStatus, `3DBAG kan niet worden geladen: ${humanFetchError(error)}`, "bad-status");
+    toast(humanFetchError(error), "bad");
+    return;
+  }
+
+  setBusy(true, "3DBAG binnen contour ophalen...");
+  setStatus(
+    dom.bagStatus,
+    `${formatNumber(pending.length, 0)} panden binnen de contour via de beveiligde GeoBIM 3DBAG-service ophalen...`,
+    "info-status"
+  );
+  dom.load3dBtn.disabled = true;
+
+  let loaded = 0;
+  let notFound = 0;
+  let failed = 0;
+  let skipped = 0;
+  let completed = 0;
+  let firstFailure = null;
+  let stopAfterNetworkFailure = false;
+
+  try {
+    await mapWithConcurrency(pending, THREE_DBAG_CONCURRENCY, async (item) => {
+      if (stopAfterNetworkFailure) {
+        skipped += 1;
+        return;
+      }
+      try {
+        const wrapper = await fetchThreeDBagById(item.bagId);
+        if (applyCityJsonWrapper(wrapper)) {
+          loaded += 1;
+        } else {
+          failed += 1;
+          item.threeDFailed = true;
+          if (!firstFailure) firstFailure = new Error(`3DBAG-antwoord voor ${item.bagId} kon niet aan het BAG-pand worden gekoppeld`);
+        }
+      } catch (error) {
+        if (Number(error?.status) === 404) {
+          notFound += 1;
+          item.threeDFailed = true;
+        } else {
+          failed += 1;
+          item.threeDFailed = true;
+          if (!firstFailure) firstFailure = error;
+          console.warn(`3DBAG kon niet worden geladen voor ${item.bagId}`, error);
+          // Een storing van de serverfunctie geldt doorgaans voor alle volgende aanvragen.
+          // Stop daarom na de eerste gelijktijdige pogingen om een lange reeks
+          // identieke foutmeldingen te voorkomen.
+          if (isLikelyNetworkOrCorsError(error)) stopAfterNetworkFailure = true;
+        }
+      } finally {
+        completed += 1;
+        dom.loadingText.textContent = `3DBAG binnen contour ophalen · ${completed}/${pending.length}...`;
+      }
+    });
+
     syncBagSource();
     renderSelectedBuilding();
-    dom.bag3dToggle.checked = matched > 0;
+    const totalWith3d = targets.filter((item) => item.cityJson).length;
+    dom.bag3dToggle.checked = totalWith3d > 0;
     updateBagLayerVisibility();
-    const missing = [...state.bag.values()].filter((item) => !item.cityJson).length;
-    const message = `${formatNumber(matched, 0)} panden gekoppeld aan 3DBAG; ${formatNumber(missing, 0)} zonder 3D-geometrie.` +
-      (truncated ? ` De API-resultaatlimiet van ${formatNumber(MAX_3DBAG_FEATURES, 0)} is bereikt.` : "");
-    setStatus(dom.bagStatus, message, truncated || missing ? "warn-status" : "good-status");
+
+    const parts = [
+      `${formatNumber(totalWith3d, 0)} van ${formatNumber(targets.length, 0)} panden binnen de contour hebben 3DBAG-geometrie`,
+      `${formatNumber(loaded, 0)} nieuw geladen`
+    ];
+    if (alreadyLoaded) parts.push(`${formatNumber(alreadyLoaded, 0)} al aanwezig`);
+    if (notFound) parts.push(`${formatNumber(notFound, 0)} niet gevonden`);
+    if (failed) parts.push(`${formatNumber(failed, 0)} mislukt`);
+    if (skipped) parts.push(`${formatNumber(skipped, 0)} niet geprobeerd na netwerkblokkade`);
+
+    const statusType = failed || skipped
+      ? (totalWith3d ? "warn-status" : "bad-status")
+      : (notFound ? "warn-status" : "good-status");
+    setStatus(dom.bagStatus, `${parts.join(" · ")}.`, statusType);
+
+    if ((failed || skipped) && firstFailure) {
+      toast(`3DBAG kon niet worden opgehaald: ${humanFetchError(firstFailure)}`, "bad");
+    }
   } catch (error) {
-    console.error("3DBAG laden mislukt", error);
+    console.error("GeoBIM 3DBAG-aanroep mislukt", error);
     setStatus(dom.bagStatus, `3DBAG kon niet worden geladen: ${humanFetchError(error)}`, "bad-status");
   } finally {
     dom.load3dBtn.disabled = state.bag.size === 0;
@@ -1018,55 +1094,11 @@ async function loadThreeDBagForArea() {
   }
 }
 
-async function fetchThreeDBagByBbox(areaGeometry) {
-  const rdPoints = areaGeometry.coordinates[0].map(toRd);
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const [x, y] of rdPoints) {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  const initial = new URL(BAG3D_API);
-  initial.searchParams.set("bbox", [minX, minY, maxX, maxY].map((value) => Number(value).toFixed(3)).join(","));
-  initial.searchParams.set("limit", String(THREE_DBAG_PAGE_SIZE));
-  initial.searchParams.set("offset", "1");
-
-  const wrappers = [];
-  let nextUrl = initial.href;
-  let pages = 0;
-  let truncated = false;
-  const wanted = new Set(state.bag.keys());
-  while (nextUrl && pages < Math.ceil(MAX_3DBAG_FEATURES / THREE_DBAG_PAGE_SIZE) && wrappers.length <= MAX_3DBAG_FEATURES) {
-    pages += 1;
-    dom.loadingText.textContent = `3DBAG ophalen · pagina ${pages}…`;
-    const json = await fetchThreeDBagJson(nextUrl, "3DBAG");
-    const page = Array.isArray(json.features) ? json.features : [];
-    for (const wrapper of page) {
-      const id = normalizeBagId(wrapper?.id || cityJsonAttributes(wrapper)?.identificatie);
-      if (wanted.has(id)) wrappers.push(wrapper);
-    }
-    if (wrappers.length >= wanted.size) {
-      nextUrl = null;
-      break;
-    }
-    if (wrappers.length > MAX_3DBAG_FEATURES) {
-      truncated = true;
-      break;
-    }
-    let next = nextLink(json.links, nextUrl);
-    if (!next && Number(json.numberReturned) === THREE_DBAG_PAGE_SIZE && Number(json.numberMatched) > pages * THREE_DBAG_PAGE_SIZE) {
-      const url = new URL(initial.href);
-      url.searchParams.set("offset", String(pages * THREE_DBAG_PAGE_SIZE + 1));
-      next = url.href;
-    }
-    nextUrl = next;
-  }
-  if (nextUrl) truncated = true;
-  return { wrappers: wrappers.slice(0, MAX_3DBAG_FEATURES), truncated };
+function getThreeDBagTargets() {
+  // BAG 2D is already filtered on the selected contour rule. Re-applying the
+  // same rule here guarantees that no 3DBAG request is sent for a building
+  // outside the user-drawn area.
+  return getExportCandidates();
 }
 
 function applyCityJsonWrapper(wrapper) {
@@ -1110,6 +1142,7 @@ async function loadSelectedBuilding3d() {
   dom.loadSelected3dBtn.disabled = true;
   setBusy(true, `3DBAG voor pand ${item.bagId} ophalen…`);
   try {
+    await ensureThreeDBagService();
     const wrapper = await fetchThreeDBagById(item.bagId);
     if (!applyCityJsonWrapper(wrapper)) throw new Error("het antwoord kon niet aan het BAG-pand worden gekoppeld");
     syncBagSource();
@@ -1128,15 +1161,17 @@ async function loadSelectedBuilding3d() {
 }
 
 async function fetchThreeDBagById(bagId) {
-  const url = `${BAG3D_API}/${encodeURIComponent(toThreeDBagId(bagId))}`;
-  return fetchThreeDBagJson(url, `3DBAG-pand ${bagId}`);
+  const normalized = normalizeBagId(bagId);
+  if (!/^\d{16}$/.test(normalized)) throw new Error("ongeldige BAG-pandidentificatie");
+  await ensureThreeDBagService();
+  const url = `${BAG3D_SERVICE_BASE}/building/${encodeURIComponent(normalized)}`;
+  return fetchThreeDBagJson(url, `3DBAG-pand ${normalized}`);
 }
 
 function clearBagData({ silent = false } = {}) {
   state.bag.clear();
   state.selectedBagId = null;
   state.bagTruncated = false;
-  state.threeDTruncated = false;
   syncBagSource();
   renderSelectedBuilding();
   dom.load3dBtn.disabled = true;
@@ -1333,17 +1368,23 @@ function renderBagStats() {
   dom.bagStats.classList.remove("hidden");
 }
 
+function matchesAreaSelectionRule(geometry, areaGeometry = state.area?.geometry) {
+  if (!geometry || !areaGeometry) return false;
+  const mode = dom.selectionMode.value;
+  if (mode === "within") return geometryWithinPolygon(geometry, areaGeometry);
+  if (mode === "centroid") {
+    const centroid = geometryCentroid(geometry);
+    return Boolean(centroid && pointInGeometry(centroid, areaGeometry));
+  }
+  return geometryIntersectsPolygon(geometry, areaGeometry);
+}
+
 function getExportCandidates() {
   if (!state.area) return [];
-  const mode = dom.selectionMode.value;
   const candidates = [];
   for (const item of state.bag.values()) {
     if (item.excluded || !item.feature?.geometry) continue;
-    const centroid = mode === "centroid" ? geometryCentroid(item.feature.geometry) : null;
-    const include = mode === "centroid"
-      ? Boolean(centroid && pointInGeometry(centroid, state.area.geometry))
-      : geometryIntersectsPolygon(item.feature.geometry, state.area.geometry);
-    if (include) candidates.push(item);
+    if (matchesAreaSelectionRule(item.feature.geometry, state.area.geometry)) candidates.push(item);
   }
   return candidates;
 }
@@ -1382,7 +1423,16 @@ async function exportSelectedBuildingsToIfc() {
   setBusy(true, "IFC-export voorbereiden…");
   try {
     const missing = candidates.filter((item) => !item.cityJson && !item.threeDFailed);
-    if (dom.fetchMissing3d.checked && missing.length && missing.length <= MAX_AUTO_3D_FETCH) {
+    let canFetchMissing3d = Boolean(dom.fetchMissing3d.checked && missing.length && missing.length <= MAX_AUTO_3D_FETCH);
+    if (canFetchMissing3d) {
+      try {
+        await ensureThreeDBagService();
+      } catch (error) {
+        canFetchMissing3d = false;
+        toast(`3DBAG kon niet worden opgehaald; de IFC-export gebruikt voor deze panden BAG-extrusies. ${humanFetchError(error)}`, "warn");
+      }
+    }
+    if (canFetchMissing3d) {
       setStatus(dom.exportStatus, `${missing.length} ontbrekende 3DBAG-panden ophalen…`, "info-status");
       let completed = 0;
       await mapWithConcurrency(missing, 3, async (item) => {
@@ -1456,7 +1506,11 @@ async function exportSelectedBuildingsToIfc() {
       areaProperties: {
         "Selectievorm": state.areaLabel || state.area.properties?.shape || "Onbekend",
         "Oppervlakte selectie m2": Number(areaSize.toFixed(2)),
-        "Selectieregel": dom.selectionMode.value === "centroid" ? "Middelpunt binnen gebied" : "Gebouw raakt gebied",
+        "Selectieregel": dom.selectionMode.value === "within"
+          ? "Volledig gebouw binnen gebied"
+          : dom.selectionMode.value === "centroid"
+            ? "Middelpunt binnen gebied"
+            : "Gebouw raakt gebied",
         "Aantal panden": buildings.length,
         "Aantal exacte 3DBAG geometrieën": exactCount,
         "Aantal BAG 2D extrusies": fallbackCount,
@@ -1552,10 +1606,22 @@ async function loadIfc(file) {
     const buffer = await file.arrayBuffer();
     const text = new TextDecoder("utf-8").decode(buffer);
     const georef = parseIfcGeoreference(text);
-    const footprint = await extractIfcFootprint(new Uint8Array(buffer), georef);
+    const footprintResult = await extractIfcFootprint(new Uint8Array(buffer), georef);
     const id = `ifc-model-${++state.ifcCounter}`;
     const color = ifcPalette[(state.ifcCounter - 1) % ifcPalette.length];
-    const model = { id, name: file.name, georef, footprint, color, visible: true };
+    const model = {
+      id,
+      name: file.name,
+      georef,
+      footprint: footprintResult?.footprint || null,
+      contour: footprintResult?.diagnostics || {
+        quality: "bad",
+        message: "Geen kaartcontour beschikbaar",
+        details: {}
+      },
+      color,
+      visible: true
+    };
     state.ifcModels.push(model);
     drawIfcModel(model);
     renderIfcModels();
@@ -1569,6 +1635,11 @@ async function loadIfc(file) {
       color: "#cf4d4d",
       visible: true,
       footprint: null,
+      contour: {
+        quality: "bad",
+        message: "Geen kaartcontour beschikbaar",
+        details: { Fout: error.message }
+      },
       georef: {
         quality: "bad",
         message: "IFC kon niet worden verwerkt",
@@ -2025,10 +2096,34 @@ function isPlausibleLonLat(lon, lat) {
 }
 
 async function extractIfcFootprint(data, georef) {
-  if (georef.quality === "bad") return null;
+  if (georef.quality === "bad") {
+    return {
+      footprint: null,
+      diagnostics: {
+        quality: "bad",
+        message: "Zonder bruikbare georeferentie kan de contour niet op de kaart worden geplaatst",
+        details: { "Contourmethode": "niet beschikbaar" }
+      }
+    };
+  }
+
   const api = await getIfcApi();
   let modelId = null;
-  const points = [];
+  const planarPoints = [];
+  const stats = {
+    vertexCount: 0,
+    invalidXyCount: 0,
+    invalidZCount: 0,
+    finiteZCount: 0,
+    invalidMatrixValueCount: 0,
+    tiltedPlacementCount: 0,
+    minModelZ: Infinity,
+    maxModelZ: -Infinity,
+    minMapZ: Infinity,
+    maxMapZ: -Infinity,
+    maxHorizontalZShift: 0
+  };
+
   try {
     modelId = api.OpenModel(data, { COORDINATE_TO_ORIGIN: false, USE_FAST_BOOLS: true });
     const meshes = api.LoadAllGeometry(modelId);
@@ -2039,20 +2134,62 @@ async function extractIfcFootprint(data, georef) {
         const geometry = api.GetGeometry(modelId, placed.geometryExpressID);
         try {
           const vertices = api.GetVertexArray(geometry.GetVertexData(), geometry.GetVertexDataSize());
-          const matrix = placed.flatTransformation;
+          const matrixInfo = normalizedIfcMatrix(placed.flatTransformation);
+          const matrix = matrixInfo.values;
+          stats.invalidMatrixValueCount += matrixInfo.invalidCount;
+          const verticalHorizontalComponent = Math.hypot(matrix[8], matrix[9]);
+          if (verticalHorizontalComponent > 1e-8) stats.tiltedPlacementCount += 1;
+
           for (let index = 0; index < vertices.length; index += 6) {
-            const x = vertices[index];
-            const y = vertices[index + 1];
-            const z = vertices[index + 2];
-            const transformedX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
-            const transformedY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
-            const lngLat = localIfcToLngLat(transformedX, transformedY, georef);
-            if (lngLat && lngLat.every(Number.isFinite)) points.push(lngLat);
-            if (points.length > 200_000) {
+            stats.vertexCount += 1;
+            const x = Number(vertices[index]);
+            const y = Number(vertices[index + 1]);
+            const z = Number(vertices[index + 2]);
+
+            if (!Number.isFinite(x) || !Number.isFinite(y)) {
+              stats.invalidXyCount += 1;
+              continue;
+            }
+
+            // De kaartcontour is bewust een vlakke XY-projectie. Z wordt hier dus
+            // niet vermenigvuldigd met matrix[8] of matrix[9]. Daardoor kan een
+            // ontbrekende, extreme of foutieve Z-waarde de 2D-contour niet laten verdwijnen.
+            const planarX = matrix[0] * x + matrix[4] * y + matrix[12];
+            const planarY = matrix[1] * x + matrix[5] * y + matrix[13];
+            if (!Number.isFinite(planarX) || !Number.isFinite(planarY)) {
+              stats.invalidXyCount += 1;
+              continue;
+            }
+            planarPoints.push([planarX, planarY]);
+
+            if (!Number.isFinite(z)) {
+              stats.invalidZCount += 1;
+            } else {
+              const modelZ = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
+              if (Number.isFinite(modelZ)) {
+                stats.finiteZCount += 1;
+                stats.minModelZ = Math.min(stats.minModelZ, modelZ);
+                stats.maxModelZ = Math.max(stats.maxModelZ, modelZ);
+                const mapZ = localIfcZToMapHeight(modelZ, georef);
+                if (Number.isFinite(mapZ)) {
+                  stats.minMapZ = Math.min(stats.minMapZ, mapZ);
+                  stats.maxMapZ = Math.max(stats.maxMapZ, mapZ);
+                }
+              } else {
+                stats.invalidZCount += 1;
+              }
+
+              const horizontalShift = Math.hypot(matrix[8] * z, matrix[9] * z) * ifcHorizontalScaleToMap(georef);
+              if (Number.isFinite(horizontalShift)) {
+                stats.maxHorizontalZShift = Math.max(stats.maxHorizontalZShift, horizontalShift);
+              }
+            }
+
+            if (planarPoints.length > 220_000) {
               const reduced = [];
-              for (let sample = 0; sample < points.length; sample += 2) reduced.push(points[sample]);
-              points.length = 0;
-              points.push(...reduced);
+              for (let sample = 0; sample < planarPoints.length; sample += 2) reduced.push(planarPoints[sample]);
+              planarPoints.length = 0;
+              planarPoints.push(...reduced);
             }
           }
         } finally {
@@ -2063,8 +2200,296 @@ async function extractIfcFootprint(data, georef) {
   } finally {
     if (modelId != null) api.CloseModel(modelId);
   }
-  if (points.length < 3) return null;
-  return convexHull(points);
+
+  if (planarPoints.length < 3) {
+    return {
+      footprint: null,
+      diagnostics: {
+        quality: "bad",
+        message: "De IFC bevat onvoldoende bruikbare XY-geometrie voor een kaartcontour",
+        details: compactDetails({
+          "Contourmethode": "Vlakke XY-projectie; Z genegeerd",
+          "Geometriepunten gelezen": stats.vertexCount,
+          "Ongeldige XY-punten": stats.invalidXyCount,
+          "Ongeldige Z-punten": stats.invalidZCount
+        })
+      }
+    };
+  }
+
+  const filtered = filterPlanarOutliers(planarPoints);
+  const mapCandidate = projectIfcPlanCandidate(filtered.points, georef, "map-conversion");
+  const directCandidate = canUseDirectProjectedCoordinates(georef)
+    ? projectIfcPlanCandidate(filtered.points, georef, "direct-crs")
+    : null;
+  const selected = chooseIfcPlanCandidate(mapCandidate, directCandidate, filtered.points, georef);
+  const footprint = selected?.candidate?.footprint || null;
+
+  if (!footprint || footprint.length < 4) {
+    return {
+      footprint: null,
+      diagnostics: {
+        quality: "bad",
+        message: "De vlakke XY-geometrie kon niet tot een geldige kaartcontour worden geprojecteerd",
+        details: compactDetails({
+          "Contourmethode": "Vlakke XY-projectie; Z genegeerd",
+          "Geometriepunten gelezen": stats.vertexCount,
+          "Bruikbare XY-punten": filtered.points.length,
+          "Verwijderde geometrie-uitbijters": filtered.removed,
+          "Ongeldige Z-punten": stats.invalidZCount
+        })
+      }
+    };
+  }
+
+  const zWarnings = [];
+  if (stats.finiteZCount === 0) zWarnings.push("geen bruikbare Z-waarden gevonden");
+  if (stats.invalidZCount > 0) zWarnings.push(`${stats.invalidZCount} ongeldige Z-punten`);
+  const mapZSpan = Number.isFinite(stats.minMapZ) && Number.isFinite(stats.maxMapZ)
+    ? stats.maxMapZ - stats.minMapZ
+    : null;
+  const maxAbsoluteMapZ = Number.isFinite(stats.minMapZ) && Number.isFinite(stats.maxMapZ)
+    ? Math.max(Math.abs(stats.minMapZ), Math.abs(stats.maxMapZ))
+    : null;
+  if (Number.isFinite(mapZSpan) && mapZSpan > 1000) zWarnings.push("Z-bereik is groter dan 1.000 m");
+  if (Number.isFinite(maxAbsoluteMapZ) && maxAbsoluteMapZ > 20_000) zWarnings.push("berekende kaarthoogte is extreem");
+  if (stats.maxHorizontalZShift > 0.25) zWarnings.push("Z beïnvloedt de oorspronkelijke XY-plaatsing");
+  if (stats.invalidMatrixValueCount > 0) zWarnings.push("ongeldige plaatsingsmatrix gecorrigeerd");
+
+  const otherWarnings = [];
+  if (filtered.removed > 0) otherWarnings.push(`${filtered.removed} ruimtelijke uitbijters genegeerd`);
+  if (selected?.mode === "direct-crs") otherWarnings.push("mogelijk reeds ingebakken kaartcoördinaten gebruikt");
+
+  const hasZWarning = zWarnings.length > 0;
+  const hasAnyWarning = hasZWarning || otherWarnings.length > 0;
+  const message = hasZWarning
+    ? "Contour wordt toch getoond: de 2D-projectie negeert Z, maar de Z-waarden vragen controle"
+    : hasAnyWarning
+      ? "Contour wordt vlak op de kaart getoond; controleer de gemelde plaatsingsfallback"
+      : "Contour wordt vlak op de kaart getoond; Z heeft geen invloed op de 2D-ligging";
+
+  return {
+    footprint,
+    diagnostics: {
+      quality: hasAnyWarning ? "warn" : "good",
+      message,
+      zWarnings,
+      details: compactDetails({
+        "Contourmethode": "Vlakke XY-projectie; Z genegeerd",
+        "Projectiekeuze": selected?.label || "standaard georeferentie",
+        "Bruikbare XY-punten": filtered.points.length,
+        "Verwijderde geometrie-uitbijters": filtered.removed || null,
+        "Z minimum model": formatMetres(stats.minModelZ),
+        "Z maximum model": formatMetres(stats.maxModelZ),
+        "Berekende kaarthoogte minimum": formatMetres(stats.minMapZ),
+        "Berekende kaarthoogte maximum": formatMetres(stats.maxMapZ),
+        "Berekend Z-bereik": formatMetres(mapZSpan),
+        "Ongeldige Z-punten": stats.invalidZCount ? `${stats.invalidZCount} van ${stats.vertexCount}` : "geen gedetecteerd",
+        "Maximale XY-invloed van Z": formatMetres(stats.maxHorizontalZShift),
+        "Afstand contour tot georeferentiepunt": formatDistance(selected?.candidate?.anchorDistance),
+        "Waarschuwing": [...zWarnings, ...otherWarnings].join("; ") || null
+      })
+    }
+  };
+}
+
+function normalizedIfcMatrix(input) {
+  const identity = [
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1
+  ];
+  const source = Array.from(input || []);
+  let invalidCount = 0;
+  const values = identity.map((fallback, index) => {
+    const value = Number(source[index]);
+    if (Number.isFinite(value)) return value;
+    invalidCount += 1;
+    return fallback;
+  });
+  return { values, invalidCount };
+}
+
+function localIfcZToMapHeight(z, georef) {
+  const value = Number(z);
+  if (!Number.isFinite(value)) return NaN;
+  const base = Number.isFinite(Number(georef?.height)) ? Number(georef.height) : 0;
+  if (["IfcMapConversion", "IfcMapConversionScaled", "Ifc2x3PsetMapConversion"].includes(georef?.method)) {
+    const scale = Number.isFinite(Number(georef.scale)) ? Number(georef.scale) : 1;
+    const factorZ = Number.isFinite(Number(georef.factorZ)) ? Number(georef.factorZ) : 1;
+    return base + value * scale * factorZ;
+  }
+  return base + value;
+}
+
+function ifcHorizontalScaleToMap(georef) {
+  if (!["IfcMapConversion", "IfcMapConversionScaled", "Ifc2x3PsetMapConversion"].includes(georef?.method)) return 1;
+  const scale = Number.isFinite(Number(georef.scale)) ? Math.abs(Number(georef.scale)) : 1;
+  const factorX = Number.isFinite(Number(georef.factorX)) ? Math.abs(Number(georef.factorX)) : 1;
+  const factorY = Number.isFinite(Number(georef.factorY)) ? Math.abs(Number(georef.factorY)) : 1;
+  return scale * Math.max(factorX, factorY);
+}
+
+function canUseDirectProjectedCoordinates(georef) {
+  return Boolean(
+    georef?.epsg &&
+    projectionSupported(georef.epsg) &&
+    georef.epsg !== "EPSG:4326" &&
+    ["IfcMapConversion", "IfcMapConversionScaled", "Ifc2x3PsetMapConversion", "IfcRigidOperationProjected"].includes(georef.method)
+  );
+}
+
+function projectIfcPlanCandidate(points, georef, mode) {
+  const projected = [];
+  for (const [x, y] of points) {
+    const coordinate = mode === "direct-crs"
+      ? projectCoordinate(georef.epsg, "EPSG:4326", [x, y])
+      : localIfcToLngLat(x, y, georef);
+    if (coordinate && isPlausibleLonLat(coordinate[0], coordinate[1])) projected.push(coordinate);
+  }
+  if (projected.length < 3) return null;
+  const footprint = footprintFromProjectedPoints(projected);
+  if (!footprint || footprint.length < 4) return null;
+  const center = footprintCenter(footprint);
+  const anchor = isPlausibleLonLat(georef?.lon, georef?.lat) ? [georef.lon, georef.lat] : null;
+  return {
+    mode,
+    footprint,
+    center,
+    anchorDistance: anchor && center ? distanceBetweenLngLat(anchor, center) : null,
+    pointCount: projected.length
+  };
+}
+
+function chooseIfcPlanCandidate(mapCandidate, directCandidate, localPoints, georef) {
+  if (!mapCandidate && !directCandidate) return null;
+  if (!mapCandidate) {
+    return { candidate: directCandidate, mode: "direct-crs", label: "Directe CRS-projectie als fallback" };
+  }
+  if (!directCandidate) {
+    return { candidate: mapCandidate, mode: "map-conversion", label: "IFC-coördinatenoperatie" };
+  }
+
+  const localBounds = boundsOfPlanarPoints(localPoints);
+  const localCenter = localBounds
+    ? [(localBounds.minX + localBounds.maxX) / 2, (localBounds.minY + localBounds.maxY) / 2]
+    : null;
+  const localSpan = localBounds ? Math.max(localBounds.maxX - localBounds.minX, localBounds.maxY - localBounds.minY) : 0;
+  const closeToCrsOrigin = localCenter && Number.isFinite(georef?.easting) && Number.isFinite(georef?.northing)
+    ? Math.hypot(localCenter[0] - georef.easting, localCenter[1] - georef.northing) < Math.max(5000, localSpan * 20)
+    : false;
+  const mapDistance = Number.isFinite(Number(mapCandidate.anchorDistance)) ? Number(mapCandidate.anchorDistance) : null;
+  const directDistance = Number.isFinite(Number(directCandidate.anchorDistance)) ? Number(directCandidate.anchorDistance) : null;
+  const strongDistanceEvidence = Number.isFinite(mapDistance) && Number.isFinite(directDistance)
+    && mapDistance > 25_000
+    && directDistance < 5_000
+    && directDistance * 5 < mapDistance;
+  const bakedCoordinateEvidence = closeToCrsOrigin
+    && Number.isFinite(directDistance)
+    && (!Number.isFinite(mapDistance) || directDistance + 1000 < mapDistance);
+
+  if (strongDistanceEvidence || bakedCoordinateEvidence) {
+    return {
+      candidate: directCandidate,
+      mode: "direct-crs",
+      label: "Directe CRS-projectie; mogelijk reeds ingebakken kaartcoördinaten"
+    };
+  }
+  return { candidate: mapCandidate, mode: "map-conversion", label: "IFC-coördinatenoperatie" };
+}
+
+function footprintFromProjectedPoints(points) {
+  const hull = convexHull(points);
+  if (hull.length >= 4) return hull;
+  const bounds = boundsOfPlanarPoints(points);
+  if (!bounds || bounds.maxX === bounds.minX || bounds.maxY === bounds.minY) return null;
+  return [
+    [bounds.minX, bounds.minY],
+    [bounds.maxX, bounds.minY],
+    [bounds.maxX, bounds.maxY],
+    [bounds.minX, bounds.maxY],
+    [bounds.minX, bounds.minY]
+  ];
+}
+
+function filterPlanarOutliers(points) {
+  if (points.length < 80) return { points, removed: 0 };
+  const xs = points.map((point) => point[0]).sort((a, b) => a - b);
+  const ys = points.map((point) => point[1]).sort((a, b) => a - b);
+  const x1 = quantileSorted(xs, 0.25);
+  const x3 = quantileSorted(xs, 0.75);
+  const y1 = quantileSorted(ys, 0.25);
+  const y3 = quantileSorted(ys, 0.75);
+  const xIqr = x3 - x1;
+  const yIqr = y3 - y1;
+  const xMin = xIqr > 1e-9 ? x1 - xIqr * 25 : -Infinity;
+  const xMax = xIqr > 1e-9 ? x3 + xIqr * 25 : Infinity;
+  const yMin = yIqr > 1e-9 ? y1 - yIqr * 25 : -Infinity;
+  const yMax = yIqr > 1e-9 ? y3 + yIqr * 25 : Infinity;
+  const filtered = points.filter(([x, y]) => x >= xMin && x <= xMax && y >= yMin && y <= yMax);
+  const removed = points.length - filtered.length;
+  if (filtered.length < 3 || removed > points.length * 0.2) return { points, removed: 0 };
+  return { points: filtered, removed };
+}
+
+function quantileSorted(values, fraction) {
+  if (!values.length) return NaN;
+  const position = (values.length - 1) * fraction;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return values[lower];
+  const weight = position - lower;
+  return values[lower] * (1 - weight) + values[upper] * weight;
+}
+
+function boundsOfPlanarPoints(points) {
+  if (!points?.length) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const point of points) {
+    if (!Number.isFinite(point?.[0]) || !Number.isFinite(point?.[1])) continue;
+    minX = Math.min(minX, point[0]);
+    minY = Math.min(minY, point[1]);
+    maxX = Math.max(maxX, point[0]);
+    maxY = Math.max(maxY, point[1]);
+  }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+function footprintCenter(footprint) {
+  const points = footprint?.slice(0, -1) || [];
+  if (!points.length) return null;
+  const bounds = boundsOfPlanarPoints(points);
+  return bounds ? [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2] : null;
+}
+
+function distanceBetweenLngLat(a, b) {
+  const lon1 = Number(a?.[0]) * Math.PI / 180;
+  const lat1 = Number(a?.[1]) * Math.PI / 180;
+  const lon2 = Number(b?.[0]) * Math.PI / 180;
+  const lat2 = Number(b?.[1]) * Math.PI / 180;
+  if (![lon1, lat1, lon2, lat2].every(Number.isFinite)) return null;
+  const dLon = lon2 - lon1;
+  const dLat = lat2 - lat1;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 6_371_008.8 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+}
+
+function formatMetres(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const decimals = Math.abs(number) < 100 ? 2 : Math.abs(number) < 10_000 ? 1 : 0;
+  return `${formatNumber(number, decimals)} m`;
+}
+
+function formatDistance(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  if (number >= 1000) return `${formatNumber(number / 1000, number >= 10_000 ? 0 : 2)} km`;
+  return `${formatNumber(number, number < 10 ? 2 : 0)} m`;
 }
 
 function localIfcToLngLat(x, y, georef) {
@@ -2108,37 +2533,70 @@ function convexHull(points) {
 }
 
 function drawIfcModel(model) {
-  if (!state.mapReady || !model.footprint || model.footprint.length < 3) return;
-  const sourceId = `${model.id}-source`;
-  const fillId = `${model.id}-fill`;
-  const lineId = `${model.id}-line`;
-  map.addSource(sourceId, {
-    type: "geojson",
-    data: {
-      type: "Feature",
-      properties: { name: model.name },
-      geometry: { type: "Polygon", coordinates: [model.footprint] }
+  if (!state.mapReady) return;
+
+  if (model.footprint && model.footprint.length >= 3) {
+    const sourceId = `${model.id}-source`;
+    const fillId = `${model.id}-fill`;
+    const lineId = `${model.id}-line`;
+    if (!map.getSource(sourceId)) {
+      map.addSource(sourceId, {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          properties: { name: model.name },
+          geometry: { type: "Polygon", coordinates: [model.footprint] }
+        }
+      });
+      map.addLayer({
+        id: fillId,
+        type: "fill",
+        source: sourceId,
+        paint: { "fill-color": model.color, "fill-opacity": 0.28 }
+      });
+      const linePaint = {
+        "line-color": model.contour?.quality === "warn" ? "#d78600" : model.color,
+        "line-width": model.contour?.quality === "warn" ? 4 : 3
+      };
+      if (model.contour?.quality === "warn") linePaint["line-dasharray"] = [2, 1];
+      map.addLayer({ id: lineId, type: "line", source: sourceId, paint: linePaint });
     }
-  });
-  map.addLayer({
-    id: fillId,
-    type: "fill",
-    source: sourceId,
-    paint: { "fill-color": model.color, "fill-opacity": 0.28 }
-  });
-  map.addLayer({
-    id: lineId,
-    type: "line",
-    source: sourceId,
-    paint: { "line-color": model.color, "line-width": 3 }
-  });
+  }
+
+  if (isPlausibleLonLat(model.georef?.lon, model.georef?.lat)) {
+    const anchorSourceId = `${model.id}-anchor-source`;
+    const anchorLayerId = `${model.id}-anchor`;
+    if (!map.getSource(anchorSourceId)) {
+      map.addSource(anchorSourceId, {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          properties: { name: `${model.name} — georeferentiepunt` },
+          geometry: { type: "Point", coordinates: [model.georef.lon, model.georef.lat] }
+        }
+      });
+      map.addLayer({
+        id: anchorLayerId,
+        type: "circle",
+        source: anchorSourceId,
+        paint: {
+          "circle-radius": 5,
+          "circle-color": "#ffffff",
+          "circle-stroke-color": model.color,
+          "circle-stroke-width": 3
+        }
+      });
+    }
+  }
 }
 
 function removeIfcModel(id) {
-  for (const suffix of ["-fill", "-line"]) {
+  for (const suffix of ["-fill", "-line", "-anchor"]) {
     if (map.getLayer(id + suffix)) map.removeLayer(id + suffix);
   }
-  if (map.getSource(id + "-source")) map.removeSource(id + "-source");
+  for (const suffix of ["-source", "-anchor-source"]) {
+    if (map.getSource(id + suffix)) map.removeSource(id + suffix);
+  }
   state.ifcModels = state.ifcModels.filter((model) => model.id !== id);
   renderIfcModels();
 }
@@ -2151,7 +2609,7 @@ function toggleIfcModel(id) {
   const model = state.ifcModels.find((item) => item.id === id);
   if (!model) return;
   model.visible = !model.visible;
-  for (const suffix of ["-fill", "-line"]) {
+  for (const suffix of ["-fill", "-line", "-anchor"]) {
     if (map.getLayer(id + suffix)) map.setLayoutProperty(id + suffix, "visibility", model.visible ? "visible" : "none");
   }
   renderIfcModels();
@@ -2164,8 +2622,14 @@ function zoomToIfcModel(model) {
       new maplibregl.LngLatBounds(model.footprint[0], model.footprint[0])
     );
     map.fitBounds(bounds, { padding: 90, maxZoom: 20, duration: 700 });
-  } else if (Number.isFinite(model.georef?.lon) && Number.isFinite(model.georef?.lat)) {
-    map.flyTo({ center: [model.georef.lon, model.georef.lat], zoom: 18, duration: 700 });
+  } else {
+    zoomToIfcAnchor(model);
+  }
+}
+
+function zoomToIfcAnchor(model) {
+  if (isPlausibleLonLat(model.georef?.lon, model.georef?.lat)) {
+    map.flyTo({ center: [model.georef.lon, model.georef.lat], zoom: 19, duration: 700 });
   }
 }
 
@@ -2184,36 +2648,65 @@ function renderIfcModels() {
     const name = document.createElement("div");
     name.className = "model-name";
     name.textContent = model.name;
+
+    const georefLabel = document.createElement("div");
+    georefLabel.className = "model-status-label";
+    georefLabel.textContent = "Georeferentie";
     const status = document.createElement("div");
-    status.className = `status ${model.georef.quality}-status`;
+    status.className = `status compact-status ${model.georef.quality}-status`;
     status.textContent = model.georef.message;
+
+    const contourLabel = document.createElement("div");
+    contourLabel.className = "model-status-label";
+    contourLabel.textContent = "Kaartcontour";
+    const contourStatus = document.createElement("div");
+    contourStatus.className = `status compact-status ${(model.contour?.quality || "bad")}-status`;
+    contourStatus.textContent = model.contour?.message || "Geen kaartcontour beschikbaar";
+
     const meta = document.createElement("div");
     meta.className = "model-meta";
-    for (const [key, value] of Object.entries(model.georef.details || {})) {
+    const allDetails = {
+      ...(model.georef.details || {}),
+      ...(model.contour?.details || {})
+    };
+    for (const [key, value] of Object.entries(allDetails)) {
       const label = document.createElement("span");
       label.textContent = key;
       const strong = document.createElement("strong");
       strong.textContent = String(value);
       meta.append(label, strong);
     }
+
     const actions = document.createElement("div");
     actions.className = "model-actions";
     const toggle = createButton(model.visible ? "Verbergen" : "Tonen", () => toggleIfcModel(model.id));
-    const zoom = createButton("Zoom naar model", () => zoomToIfcModel(model));
+    const zoom = createButton("Zoom naar contour", () => zoomToIfcModel(model));
+    actions.append(toggle, zoom);
+    if (isPlausibleLonLat(model.georef?.lon, model.georef?.lat)) {
+      actions.append(createButton("Zoom naar referentiepunt", () => zoomToIfcAnchor(model)));
+    }
     const remove = createButton("Verwijderen", () => removeIfcModel(model.id));
-    actions.append(toggle, zoom, remove);
-    article.append(name, status, meta, actions);
+    actions.append(remove);
+    article.append(name, georefLabel, status, contourLabel, contourStatus, meta, actions);
     dom.models.appendChild(article);
   }
-  const qualities = state.ifcModels.map((model) => model.georef.quality);
-  const worst = qualities.includes("bad") ? "bad" : qualities.includes("warn") ? "warn" : "good";
+
+  const combinedQualities = state.ifcModels.map((model) => {
+    if (model.georef.quality === "bad" || model.contour?.quality === "bad") return "bad";
+    if (model.georef.quality === "warn" || model.contour?.quality === "warn") return "warn";
+    return "good";
+  });
+  const worst = combinedQualities.includes("bad") ? "bad" : combinedQualities.includes("warn") ? "warn" : "good";
+  const hasZWarning = state.ifcModels.some((model) => model.contour?.zWarnings?.length);
   setStatus(
     dom.overallStatus,
     worst === "good"
-      ? "Alle modellen hebben een bruikbare native coördinatenoperatie. Controleer de contour visueel op de kaart."
+      ? "Alle modellen hebben een bruikbare georeferentie en een zichtbare vlakke kaartcontour. Z wordt alleen gecontroleerd en niet gebruikt voor de 2D-ligging."
       : worst === "warn"
-        ? "Minstens één model gebruikt een minder betrouwbare geografische fallback. Controleer extra zorgvuldig."
-        : "Minstens één model kan niet automatisch op de kaart worden geplaatst.",
+        ? hasZWarning
+          ? "Minstens één model heeft een Z-waarschuwing. De contour blijft zichtbaar omdat de kaartprojectie Z bewust negeert."
+          : "Minstens één model gebruikt een plaatsingsfallback. Controleer contour en georeferentiepunt visueel."
+        : "Minstens één model mist een bruikbare georeferentie of voldoende XY-geometrie voor een kaartcontour.",
     `${worst}-status`
   );
 }
@@ -2321,51 +2814,68 @@ function fromRd(coordinate) {
   return result.map(Number);
 }
 
-function buildCorsProxyNlUrl(targetUrl) {
-  const target = new URL(targetUrl);
-  const protocol = target.protocol === "http:" ? "http" : "https";
-  return `https://corsproxy.nl/${protocol}/${target.host}${target.pathname}${target.search}`;
+function isGitHubPagesHost() {
+  return /\.github\.io$/i.test(window.location.hostname);
 }
 
-function orderedThreeDBagRoutes() {
-  const remembered = THREE_DBAG_ROUTES.find((route) => route.id === state.threeDBagRouteId);
-  if (!remembered) return [...THREE_DBAG_ROUTES];
-  const alternatives = THREE_DBAG_ROUTES.filter((route) => route.id !== remembered.id && route.id !== "direct");
-  const direct = THREE_DBAG_ROUTES.find((route) => route.id === "direct");
-  return remembered.id === "direct"
-    ? [remembered, ...alternatives]
-    : [remembered, ...alternatives, direct].filter(Boolean);
+async function ensureThreeDBagService({ force = false } = {}) {
+  if (!force && state.threeDBagServiceAvailable === true) return true;
+
+  if (isGitHubPagesHost()) {
+    const error = new Error(
+      "3DBAG heeft een kleine serverfunctie nodig en werkt daarom niet op een uitsluitend statische GitHub Pages-site. Publiceer dezelfde GitHub-repository via Cloudflare Pages; BAG 2D en de overige statische functies kunnen wel op GitHub Pages blijven werken."
+    );
+    error.code = "GITHUB_PAGES_STATIC";
+    error.source = "3dbag-service";
+    throw error;
+  }
+
+  if (!force && state.threeDBagServiceCheck) return state.threeDBagServiceCheck;
+
+  const check = (async () => {
+    const url = `${BAG3D_SERVICE_BASE}/health`;
+    try {
+      const json = await fetchJson(url, "GeoBIM 3DBAG-service", 30_000, { accept: "application/json" });
+      if (!json?.ok) throw new Error("de GeoBIM 3DBAG-service gaf geen geldige status terug");
+      state.threeDBagServiceAvailable = true;
+      return true;
+    } catch (error) {
+      state.threeDBagServiceAvailable = false;
+      error.source = "3dbag-service";
+      throw error;
+    } finally {
+      state.threeDBagServiceCheck = null;
+    }
+  })();
+
+  state.threeDBagServiceCheck = check;
+  return check;
 }
 
 async function fetchThreeDBagJson(targetUrl, label = "3DBAG", timeoutMs = 120_000) {
-  const failures = [];
-  for (const route of orderedThreeDBagRoutes()) {
-    try {
-      const json = await fetchJson(route.buildUrl(targetUrl), `${label} via ${route.label}`, timeoutMs);
-      state.threeDBagRouteId = route.id;
-      return json;
-    } catch (error) {
-      failures.push(`${route.label}: ${String(error?.message || error)}`);
-    }
+  try {
+    return await fetchJson(targetUrl, label, timeoutMs, {
+      accept: "application/json, application/city+json;q=0.9"
+    });
+  } catch (error) {
+    error.source = "3dbag-service";
+    error.targetUrl = targetUrl;
+    throw error;
   }
-  console.warn("Alle 3DBAG-routes zijn mislukt", failures);
-  const error = new Error(
-    "de 3DBAG-bron kon via geen van de beschikbare browserroutes worden bereikt. " +
-    "Probeer het later opnieuw of maak het selectiegebied kleiner"
-  );
-  error.details = failures;
-  throw error;
 }
 
-async function fetchJson(url, label = "Gegevens", timeoutMs = 90_000) {
+async function fetchJson(url, label = "Gegevens", timeoutMs = 90_000, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
+      mode: "cors",
+      credentials: "omit",
       headers: {
-        Accept: "application/json, application/geo+json, application/city+json;q=0.9, */*;q=0.2"
+        Accept: options.accept || "application/json, application/geo+json, application/city+json;q=0.9, */*;q=0.2"
       },
       cache: "no-store",
+      referrerPolicy: "no-referrer",
       signal: controller.signal
     });
     if (!response.ok) {
@@ -2376,7 +2886,10 @@ async function fetchJson(url, label = "Gegevens", timeoutMs = 90_000) {
       } catch {
         detail = "";
       }
-      throw new Error(`${label} antwoordde met HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+      const httpError = new Error(`${label} antwoordde met HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+      httpError.status = response.status;
+      httpError.url = response.url || url;
+      throw httpError;
     }
     try {
       return await response.json();
@@ -2405,10 +2918,22 @@ function nextLink(links, currentUrl) {
   }
 }
 
+function isLikelyNetworkOrCorsError(error) {
+  const message = String(error?.message || error || "");
+  return /failed to fetch|networkerror|load failed|network request failed/i.test(message);
+}
+
 function humanFetchError(error) {
   const message = String(error?.message || error || "onbekende fout");
+  if (error?.code === "GITHUB_PAGES_STATIC") return message;
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    if (error?.source === "3dbag-service") {
+      return "de GeoBIM 3DBAG-serverfunctie is niet bereikbaar. Controleer of de site via Cloudflare Pages met Git-integratie is gepubliceerd en of de map functions in de repository staat";
+    }
     return "netwerk- of CORS-fout. Controleer de internetverbinding en probeer opnieuw";
+  }
+  if (error?.source === "3dbag-service" && /404|geen geldige json|http 404/i.test(message)) {
+    return "de GeoBIM 3DBAG-serverfunctie ontbreekt. Publiceer de repository via Cloudflare Pages met Git-integratie; alleen statische GitHub Pages kan deze functie niet uitvoeren";
   }
   return message;
 }

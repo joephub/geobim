@@ -7,44 +7,43 @@ GeoBIM vraagt pandgeometrie op via de PDOK Basisregistratie Adressen en Gebouwen
 - Aanbieder: Kadaster / LV-BAG
 - Dienst: `https://api.pdok.nl/kadaster/bag/ogc/v2`
 - Licentie: Public Domain Mark 1.0
-- Actualisatie: dagelijks volgens de PDOK-dienstbeschrijving
+
+De API-selectie gebruikt eerst de omhullende rechthoek van de getekende vorm. GeoBIM filtert het resultaat daarna lokaal op de echte cirkel, rechthoek of vrije contour. Alleen passende panden worden in de browsersessie bewaard en getoond.
 
 ## Adreszoeker
 
-De adres- en postcodezoeker gebruikt de PDOK Location API.
-
 - Aanbieder: Kadaster / PDOK
 - Dienst: `https://api.pdok.nl/kadaster/location-api/v1/search`
-- Geactiveerde collectie: `adres`, versie 1
+- Collectie: adres
 - Licentie: CC BY 4.0
 - Authenticatie: niet vereist
 
 ## 3DBAG
 
-GeoBIM vraagt individuele gebouwen of gebouwen binnen een bounding box op via de 3DBAG API. De 3D-geometrie wordt geleverd als CityJSONFeature in EPSG:7415.
+GeoBIM gebruikt uitsluitend de officiële 3DBAG API.
 
 - Dienst: `https://api.3dbag.nl`
+- Endpoint per pand: `https://api.3dbag.nl/collections/pand/items/{BAG-identificatie}`
+- Formaat: CityJSONFeature
+- CRS: EPSG:7415 — Amersfoort / RD New + NAP height
 - Makers: 3D geoinformation research group TU Delft en 3DGI
 - Licentie: CC BY 4.0
-- Verplichte bronvermelding: 3DBAG © TU Delft 3D Geoinformation group en 3DGI, CC BY 4.0
+- Bronvermelding: 3DBAG © TU Delft 3D Geoinformation group en 3DGI, CC BY 4.0
 
-### CORS-compatibiliteit voor GitHub Pages
+### Selectiegedrag
 
-De 3DBAG API kan vanuit een statische browserapp door CORS worden geblokkeerd. GeoBIM probeert daarom automatisch:
+GeoBIM gebruikt voor 3DBAG geen bounding-boxdownload. Na het laden en contourfilteren van BAG 2D wordt ieder niet-verwijderd pand afzonderlijk op BAG-identificatie opgevraagd. Daardoor wordt geen 3D-geometrie gedownload van gebouwen die buiten de echte getekende contour vallen maar wel in de omhullende rechthoek liggen.
 
-1. AllOrigins raw: `https://api.allorigins.win/raw`;
-2. CORSproxy.nl: `https://corsproxy.nl`;
-3. CorsProxy.io: `https://corsproxy.io`;
-4. rechtstreeks via `https://api.3dbag.nl` als laatste terugval.
+### Afgeschermde serverfunctie
 
-Deze diensten ontvangen alleen de openbare 3DBAG-aanvraag-URL met een bounding box of BAG-identificatie. IFC-bestanden, lokale wijzigingen en geëxporteerde IFC-bestanden worden niet via deze diensten verstuurd. Het zijn externe gratis diensten; beschikbaarheid en gebruiksvoorwaarden kunnen veranderen.
+GeoBIM v2.4.0 gebruikt geen AllOrigins, CORSproxy.nl, CorsProxy.io of vergelijkbare generieke tussenservice. De browser vraagt alleen een eigen route onder `/api/3dbag/building/{BAG-id}` op. De meegeleverde Cloudflare Pages Function controleert de BAG-identificatie en vraagt vervolgens precies dat ene pand op bij `api.3dbag.nl`. De functie is geen algemene proxy en accepteert geen willekeurige externe URL. IFC-bestanden, lokale wijzigingen en IFC-exportdata worden niet naar de bron gestuurd.
 
 ## Kaarten
 
 - OpenStreetMap: © OpenStreetMap contributors
 - PDOK luchtfoto
-- PDOK BGT OGC API en officiële Mapbox-stijl
-- PDOK Kadastrale Kaart OGC API en officiële Mapbox-stijl
+- PDOK BGT OGC API en officiële stijl
+- PDOK Kadastrale Kaart OGC API en officiële stijl
 
 ## JavaScript-bibliotheken
 

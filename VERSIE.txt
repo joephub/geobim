@@ -1,20 +1,13 @@
-GeoBIM v2.1.0
-Build: 2026-08-04
+GeoBIM v2.4.0
 
-Nieuw in deze versie:
-- 3DBAG-opvragen lopen via drie automatische CORS-compatibiliteitsroutes, met rechtstreeks ophalen als laatste terugval;
-- kleine 3DBAG-pagina's voor betrouwbaardere CityJSON-verwerking;
-- pictogrammen voor vrije vorm, rechthoek en cirkel;
-- vrije vorm met Start en Stop;
-- rechthoek direct met twee kaartklikken;
-- cirkel uitsluitend met middelpunt op de kaart en straal;
-- technische RD-cirkelvelden en overige cirkelknoppen verwijderd;
-- adres- en postcodezoeker boven de kaart via de PDOK Location API;
-- cacheversie verhoogd naar 2.1.0.
-
-Bestaande functies:
-- IFC-georeferentiecontrole;
-- BAG 2D en 3DBAG LoD 1.2, 1.3 en 2.2;
-- panden lokaal verwijderen en hoogten aanpassen;
-- IFC4-export met IfcProjectedCRS, IfcMapConversion en IfcTriangulatedFaceSet;
-- BGT en Kadastrale Kaart via actuele PDOK OGC API Styles/Tiles.
+Wijzigingen:
+- 3DBAG loopt via een eigen, afgeschermde Cloudflare Pages Function;
+- geen openbare CORS-proxy's en geen rechtstreekse browseraanroep naar api.3dbag.nl;
+- de serverfunctie accepteert uitsluitend geldige individuele BAG-pandidentificaties;
+- BAG 2D wordt eerst exact op de echte cirkel, rechthoek of vrije vorm gefilterd;
+- 3DBAG wordt alleen voor de daarna overgebleven panden aangevraagd;
+- een nieuwe contour of selectieregel wist de oude BAG/3DBAG-selectie;
+- bij een niet-beschikbare 3DBAG-service kan IFC-export doorgaan met BAG-extrusies;
+- duidelijke melding wanneer de app nog op een statische github.io-site wordt geopend;
+- cacheversie verhoogd naar 2.4.0;
+- vlakke IFC-contour en Z-diagnose uit v2.2.0 behouden.

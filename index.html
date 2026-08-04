@@ -8,14 +8,14 @@
   <link rel="icon" href="data:,">
   <title>GeoBIM — IFC, BAG en 3DBAG</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
-  <link rel="stylesheet" href="./style.css?v=2.1.0">
+  <link rel="stylesheet" href="./style.css?v=2.4.0">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <div class="brand-line">
         <h1>GeoBIM</h1>
-        <span class="version">v2.1.0</span>
+        <span class="version">v2.4.0</span>
       </div>
       <p>Controleer IFC-georeferentie en maak een geogerefereerd IFC-contextmodel uit BAG en 3DBAG.</p>
     </div>
@@ -35,7 +35,7 @@
           <li>Laad BAG 2D en daarna desgewenst 3DBAG.</li>
           <li>Sluit panden uit, pas hoogten aan en exporteer naar IFC.</li>
         </ol>
-        <p class="privacy-note">IFC-bestanden en bewerkingen blijven lokaal in je browser. Alleen openbare kaart-, adres-, BAG- en 3DBAG-verzoeken worden via internet opgehaald; je IFC-bestand wordt nooit verstuurd.</p>
+        <p class="privacy-note">IFC-bestanden en bewerkingen blijven lokaal in je browser. Alleen openbare kaart-, adres-, BAG- en 3DBAG-verzoeken worden via internet opgehaald. Voor 3DBAG gebruikt de site een afgeschermde serverfunctie die uitsluitend individuele BAG-pandidentificaties bij de officiële API opvraagt; je IFC-bestand wordt nooit verstuurd.</p>
       </section>
 
       <details class="card" open>
@@ -95,9 +95,18 @@
       <details class="card" open>
         <summary>3. BAG en 3DBAG</summary>
         <div class="details-content">
+          <label>Selectie binnen contour
+            <select id="selectionMode">
+              <option value="within" selected>Alleen panden volledig binnen de contour</option>
+              <option value="centroid">Panden waarvan het middelpunt binnen de contour ligt</option>
+              <option value="intersects">Ook panden meenemen die de contour raken</option>
+            </select>
+          </label>
+          <p class="help-text">Deze regel wordt toegepast bij BAG 2D laden, 3DBAG laden en IFC-export. Bij wijzigen wordt de bestaande BAG-selectie gewist, zodat er nooit oude panden buiten de gekozen regel blijven staan.</p>
+
           <div class="button-grid two">
-            <button id="loadBagBtn" class="primary-button" type="button">BAG 2D laden</button>
-            <button id="load3dBtn" class="secondary-button" type="button" disabled>3DBAG laden</button>
+            <button id="loadBagBtn" class="primary-button" type="button">BAG 2D binnen contour laden</button>
+            <button id="load3dBtn" class="secondary-button" type="button" disabled>3DBAG binnen contour laden</button>
           </div>
 
           <div class="form-grid two compact-fields">
@@ -116,7 +125,8 @@
           <label class="check"><input id="includeDemolished" type="checkbox"> Ook BAG-panden met status ‘gesloopt’ laden</label>
           <label class="check"><input id="bag2dToggle" type="checkbox" checked> BAG 2D tonen</label>
           <label class="check"><input id="bag3dToggle" type="checkbox"> 3D-voorvertoning tonen</label>
-          <p class="help-text">De kaartvoorvertoning gebruikt de 3DBAG-maaiveld- en dakhoogte als gebouwmassa. Bij IFC-export wordt waar beschikbaar de echte CityJSON-LoD-geometrie gebruikt, inclusief dakvlakken. De app gebruikt automatisch een browsercompatibiliteitsroute wanneer de 3DBAG-bron rechtstreekse browsertoegang blokkeert.</p>
+          <div class="status info-status"><strong>3DBAG-hosting:</strong> de meegeleverde serverfunctie werkt via Cloudflare Pages. De broncode blijft in GitHub, maar op een uitsluitend statische <code>github.io</code>-pagina kan de 3DBAG API niet veilig worden uitgelezen.</div>
+          <p class="help-text">BAG 2D wordt eerst exact op de gekozen contourregel gefilterd. Daarna vraagt de app via de eigen serverfunctie uitsluitend de overgebleven BAG-pandidentificaties afzonderlijk op bij api.3dbag.nl. Er worden dus geen 3D-gebouwen buiten jouw selectie opgevraagd. De kaartvoorvertoning gebruikt maaiveld- en dakhoogten als gebouwmassa. Bij IFC-export wordt waar beschikbaar de echte CityJSON-LoD-geometrie gebruikt, inclusief dakvlakken.</p>
 
           <div id="bagStatus" class="status neutral">Nog geen BAG-data geladen</div>
           <div id="bagStats" class="stats-grid hidden"></div>
@@ -154,16 +164,10 @@
           <label>Bestandsnaam
             <input id="exportName" type="text" value="geobim-bag-context.ifc" spellcheck="false">
           </label>
-          <label>Selectieregel aan de grens
-            <select id="selectionMode">
-              <option value="intersects" selected>Volledig pand meenemen zodra het gebied het raakt</option>
-              <option value="centroid">Alleen als het middelpunt binnen het gebied ligt</option>
-            </select>
-          </label>
-          <label class="check"><input id="fetchMissing3d" type="checkbox" checked> Ontbrekende 3DBAG-geometrie bij export automatisch ophalen, tot maximaal 100 panden</label>
+          <label class="check"><input id="fetchMissing3d" type="checkbox" checked> Ontbrekende 3DBAG-geometrie bij export via de GeoBIM-service ophalen, tot maximaal 100 panden</label>
           <button id="exportIfcBtn" class="primary-button full" type="button" disabled>Geselecteerde panden exporteren naar IFC</button>
           <div id="exportStatus" class="status neutral">Teken een gebied en laad BAG 2D.</div>
-          <p class="help-text"><strong>Grensgedrag:</strong> gebouwen worden als geheel geëxporteerd; de geometrie wordt niet langs een cirkel, rechthoek of vrije lijn doorgesneden. De selectiecontour bepaalt alleen welke volledige panden worden meegenomen.</p>
+          <p class="help-text"><strong>Grensgedrag:</strong> gebouwen worden als geheel geëxporteerd; de geometrie wordt niet langs een cirkel, rechthoek of vrije lijn doorgesneden. De in stap 3 gekozen contourregel bepaalt welke volledige panden worden geladen en meegenomen.</p>
         </div>
       </details>
 
@@ -216,7 +220,7 @@
         <span id="loadingText">Bezig…</span>
       </div>
       <div id="mapHint" class="map-hint hidden"></div>
-      <div class="map-note">IFC-contouren dienen voor visuele georeferentiecontrole. BAG/3DBAG-bewerkingen zijn tijdelijk en blijven alleen in deze browsersessie.</div>
+      <div class="map-note">IFC-contouren worden altijd als vlakke XY-projectie getoond. Z wordt apart gecontroleerd en kan de 2D-contour niet verbergen. BAG/3DBAG-bewerkingen blijven alleen in deze browsersessie.</div>
     </section>
   </main>
 
@@ -224,6 +228,6 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.15.0/dist/proj4.js"></script>
-  <script type="module" src="./app.js?v=2.1.0"></script>
+  <script type="module" src="./app.js?v=2.4.0"></script>
 </body>
 </html>

@@ -1,38 +1,67 @@
-# GeoBIM v2.1.0
+# GeoBIM v2.4.0
 
-GeoBIM is een statische browserapp voor:
+GeoBIM is een browserapp voor:
 
 1. IFC-georeferentie visueel controleren op een kaart;
 2. een exportgebied tekenen als vrije vorm, rechthoek of cirkel;
-3. BAG 2D-panden binnen dat gebied ophalen;
-4. 3DBAG-geometrie en hoogtedata laden;
-5. panden lokaal verwijderen, terugzetten of van een andere exporthoogte voorzien;
-6. de geselecteerde panden als geogerefereerd IFC4-contextmodel exporteren.
+3. BAG 2D-panden exact op die contour selecteren;
+4. uitsluitend voor die geselecteerde BAG-panden 3DBAG-geometrie ophalen;
+5. panden lokaal verwijderen, terugzetten of een andere exporthoogte geven;
+6. de selectie als geogerefereerd IFC4-contextmodel exporteren.
 
-Er is geen server, database, npm-build of GitHub Action nodig. IFC-bestanden blijven lokaal in de browser. Alleen openbare kaart-, adres-, BAG- en 3DBAG-verzoeken worden via internet uitgevoerd.
+IFC-bestanden en lokale bewerkingen blijven in de browser. De app verstuurt geen IFC-bestanden naar een server.
 
-## Nieuw in v2.1.0
+## Waarom v2.4.0 anders wordt gepubliceerd
 
-- Nieuwe, compacte tekengereedschappen met pictogrammen voor vrije vorm, rechthoek en cirkel.
-- Vrije vorm heeft uitsluitend **Start** en **Stop**.
-- Rechthoek wordt direct met twee kaartklikken getekend.
-- Cirkel vraagt alleen om een straal en een middelpunt op de kaart.
-- De technische RD-invoervelden en overige cirkelknoppen zijn verwijderd.
-- Boven de kaart staat een adres- en postcodezoeker op basis van de actuele PDOK Location API.
-- 3DBAG wordt via drie automatische CORS-compatibiliteitsroutes geprobeerd; rechtstreeks ophalen is alleen de laatste terugval. Hierdoor loopt de statische GitHub Pages-site niet direct vast op een browserblokkade van de 3DBAG API.
-- 3DBAG wordt in kleine pagina's opgehaald om grote CityJSON-antwoorden beter verwerkbaar te houden.
+De officiële 3DBAG API levert de juiste data, maar de API staat niet toe dat een willekeurige website het antwoord rechtstreeks met JavaScript uitleest. Dat is een browserbeperking rond CORS. Een puur statische GitHub Pages-site kan dit niet oplossen.
+
+Daarom bevat deze versie een kleine, afgeschermde Cloudflare Pages Function:
+
+- de website vraagt een BAG-pand op via hetzelfde domein als de app;
+- de serverfunctie vraagt dat ene pand op bij `api.3dbag.nl`;
+- de functie accepteert alleen geldige BAG-pandidentificaties;
+- het is geen algemene open proxy;
+- openbare CORS-proxy's worden niet gebruikt;
+- Windows Defender hoeft daardoor geen algemene proxy-domeinen meer te blokkeren.
+
+De broncode blijft gewoon in GitHub. Cloudflare Pages publiceert dezelfde GitHub-repository en voert alleen de meegeleverde map `functions` uit.
+
+## Selectie binnen de getekende contour
+
+De BAG API wordt eerst met de omhullende rechthoek van het getekende gebied bevraagd. Daarna filtert GeoBIM de ontvangen BAG-geometrie lokaal op de echte cirkel, rechthoek of vrije vorm.
+
+Je kunt kiezen uit:
+
+- **Alleen panden volledig binnen de contour** — standaard en strengste optie;
+- **Middelpunt binnen de contour**;
+- **Ook panden die de contour raken**.
+
+Bij een nieuwe contour of een gewijzigde selectieregel wordt de bestaande BAG/3DBAG-selectie gewist. Daardoor kunnen geen oude panden uit een eerdere selectie blijven staan.
+
+3DBAG wordt vervolgens per overgebleven BAG-identificatie opgehaald. Er wordt dus geen 3DBAG-bounding-boxdownload gedaan en geen 3D-gebouw buiten de gefilterde selectie aangevraagd.
+
+## 3DBAG API
+
+De officiële 3DBAG API ondersteunt onder andere:
+
+- één gebouw via een BAG-pandidentificatie;
+- alle gebouwen in een bounding box;
+- CityJSONFeature als 3D-resultaat;
+- LoD 1.2, LoD 1.3 en LoD 2.2.
+
+GeoBIM gebruikt bewust de aanvraag per BAG-pandidentificatie, omdat daarmee de getekende contour nauwkeurig kan worden gevolgd.
 
 ## IFC-georeferentiecontrole
 
-De app probeert onder andere de volgende informatie te herkennen:
+De app probeert onder andere te herkennen:
 
 - IFC4/IFC4.3 `IfcMapConversion` en `IfcMapConversionScaled`;
 - IFC4.3 `IfcRigidOperation`;
 - IFC2X3 `ePSet_MapConversion` en `ePSet_ProjectedCRS`;
-- `IfcSite.RefLatitude`, `IfcSite.RefLongitude` en `RefElevation` als minder betrouwbare fallback;
+- `IfcSite.RefLatitude`, `IfcSite.RefLongitude` en `RefElevation` als fallback;
 - `IfcProjectedCRS`, EPSG-code, rotatie, schaal en `TrueNorth`.
 
-De IFC-geometrie wordt lokaal met `web-ifc` gelezen. De app projecteert een contour van het model op de kaart. Een groene melding betekent dat een bruikbare native kaartconversie is gevonden. Een oranje melding betekent dat een fallback is gebruikt. De controle blijft visueel: de app kan niet zelfstandig bewijzen dat de door de modelleur ingevoerde landmeetkundige waarden inhoudelijk correct zijn.
+De IFC-geometrie wordt lokaal met `web-ifc` gelezen. De kaartcontour wordt als vlakke XY-projectie opgebouwd. Z wordt apart gecontroleerd, maar kan de 2D-contour niet verbergen.
 
 Ingebouwde projecties:
 
@@ -42,61 +71,9 @@ Ingebouwde projecties:
 - EPSG:32631 en EPSG:32632;
 - EPSG:4326 en EPSG:3857.
 
-## Adres zoeken
-
-De zoekbalk boven de kaart gebruikt de PDOK Location API. Typ minimaal drie tekens van een adres of postcode. Kies een resultaat om de kaart naar die locatie te verplaatsen. De adreszoeker verandert de exportselectie niet automatisch.
-
-## Exportgebied tekenen
-
-### Vrije vorm
-
-1. Klik op het pictogram voor vrije vorm.
-2. Klik op **Start**.
-3. Klik de gewenste hoekpunten op de kaart.
-4. Klik op **Stop**.
-
-### Rechthoek
-
-1. Klik op het rechthoekpictogram.
-2. Klik twee tegenoverliggende hoeken op de kaart.
-
-### Cirkel
-
-1. Klik op het cirkelpictogram.
-2. Vul de straal in meters in.
-3. Klik op **Kies middelpunt op kaart**.
-4. Klik het middelpunt aan.
-
-Met `Esc` wordt een actieve tekenactie geannuleerd. Het prullenbakpictogram verwijdert het getekende exportgebied.
-
-## BAG 2D en 3DBAG
-
-- BAG 2D komt uit de officiële PDOK LV-BAG OGC API.
-- 3DBAG komt uit de 3DBAG API en wordt als CityJSONFeature gelezen.
-- Beschikbare LoD-keuzes zijn 1.2, 1.3 en 2.2.
-- De kaart toont BAG-contouren en een snelle 3D-massavoorvertoning.
-- Bij IFC-export gebruikt de app waar beschikbaar de echte gekozen 3DBAG-LoD-geometrie, inclusief dakvlakken.
-
-### Browsertoegang tot 3DBAG
-
-De 3DBAG API kan vanuit een statische website door het CORS-beleid van de browser worden geblokkeerd. Daarom probeert GeoBIM de aanvraag via AllOrigins, CORSproxy.nl en CorsProxy.io uit te voeren. Rechtstreeks ophalen is alleen de laatste poging wanneer de browser dit inmiddels toestaat. Alleen de openbare 3DBAG-URL met het zoekgebied of BAG-ID gaat via deze route. IFC-bestanden, lokale bewerkingen en gegenereerde IFC-data worden niet verstuurd.
-
-Deze gratis tussenroutes zijn externe diensten. Hun bereikbaarheid kan niet door GeoBIM worden gegarandeerd. Bij een grote selectie is een kleiner gebied betrouwbaarder en sneller.
-
-## Panden aanpassen
-
-Klik een BAG-pand op de kaart aan om:
-
-- het pand lokaal uit de export te verwijderen;
-- het pand terug te zetten;
-- alleen voor deze export een andere gebouwhoogte op te geven;
-- 3DBAG voor alleen dit pand op te halen.
-
-De officiële BAG- en 3DBAG-bronnen worden nooit gewijzigd.
-
 ## IFC-export
 
-De export wordt geschreven als IFC4 en bevat onder andere:
+De export is IFC4 en bevat onder andere:
 
 - `IfcProject` en `IfcSite`;
 - één `IfcBuilding` per geëxporteerd BAG-pand;
@@ -105,48 +82,31 @@ De export wordt geschreven als IFC4 en bevat onder andere:
 - `IfcMapConversion` met een lokale oorsprong in RD/NAP;
 - BAG-identificatie, bron, LoD, status en exportinformatie als propertysets.
 
-Panden met 3DBAG krijgen CityJSON-LoD-geometrie. Panden zonder 3DBAG krijgen een extrusie van de BAG 2D-contour met de ingestelde standaardhoogte.
+Panden met 3DBAG krijgen CityJSON-LoD-geometrie. Panden zonder 3DBAG krijgen een extrusie van de BAG 2D-contour met de ingestelde standaardhoogte. Wanneer de 3DBAG-service tijdens export niet bereikbaar is, gaat de IFC-export dus alsnog door met BAG-extrusies.
 
-## Gedrag aan de selectiegrens
+## Grenzen
 
-De getekende vorm is een **selectiegrens**. Gebouwgeometrie wordt niet letterlijk langs de cirkel, rechthoek of vrije vorm doorgesneden. Je kunt kiezen tussen:
-
-- een volledig pand meenemen zodra het de selectie raakt;
-- een pand alleen meenemen wanneer het geometrische middelpunt binnen de selectie ligt.
-
-Hierdoor bevat de IFC volledige en gesloten gebouwen in plaats van open volumes langs de grens.
-
-## Grenzen en beveiligingen
-
-- maximaal 3.000 BAG-panden per zoekopdracht;
-- maximaal 1.200 gekoppelde 3DBAG-panden per gebiedsopdracht;
-- maximaal 100 ontbrekende 3DBAG-panden automatisch ophalen tijdens één export;
+- maximaal 3.000 BAG-panden per BAG-opdracht;
+- maximaal 400 panden per gerichte 3DBAG-opdracht;
+- maximaal 100 ontbrekende 3DBAG-panden automatisch ophalen tijdens één IFC-export;
 - gebieden groter dan 100 km² worden geweigerd.
 
-Maak het gebied kleiner wanneer een resultaatlimiet wordt bereikt of 3DBAG te lang nodig heeft.
+## Publiceren
 
-## Publiceren met GitHub Pages
+Lees `PUBLICEREN_VIA_CLOUDFLARE_PAGES.md`.
 
-1. Pak de ZIP uit.
-2. Upload alle bestanden uit de uitgepakte map naar de hoofdmap van de repository.
-3. Laat bestaande bestanden met dezelfde naam vervangen.
-4. Ga naar **Settings → Pages**.
-5. Kies **Deploy from a branch**.
-6. Kies branch **main** en map **/(root)**.
-7. Gebruik geen eigen GitHub Actions-workflow.
-8. Wacht enkele minuten en ververs de website eventueel met `Ctrl+F5`.
+Belangrijk:
 
-De hoofdmap bevat minimaal:
+- upload de bestanden naar je GitHub-repository;
+- koppel die repository daarna aan Cloudflare Pages;
+- gebruik in Cloudflare **Git-integratie**, niet Direct Upload;
+- zet de buildopdracht op `exit 0`;
+- zet de build output directory op `public`;
+- gebruik daarna de `pages.dev`-URL van Cloudflare.
 
-```text
-index.html
-style.css
-app.js
-core.js
-.nojekyll
-```
+De oude `github.io`-URL kan de statische onderdelen tonen, maar kan de serverfunctie voor 3DBAG niet uitvoeren.
 
-## Openbare bronnen
+## Bronnen
 
 - PDOK BAG OGC API v2: `https://api.pdok.nl/kadaster/bag/ogc/v2`
 - PDOK Location API: `https://api.pdok.nl/kadaster/location-api/v1`
@@ -155,7 +115,7 @@ core.js
 - PDOK BGT OGC API: `https://api.pdok.nl/lv/bgt/ogc/v1`
 - PDOK Kadastrale Kaart OGC API: `https://api.pdok.nl/kadaster/brk-kadastrale-kaart/ogc/v1`
 
-## Bronvermelding en bibliotheken
+## Licenties
 
 - BAG: Kadaster / LV-BAG, Public Domain Mark 1.0.
 - 3DBAG: 3D geoinformation research group TU Delft en 3DGI, CC BY 4.0.
@@ -165,6 +125,4 @@ core.js
 - web-ifc, MPL-2.0.
 - earcut, ISC.
 
-## Controle van het resultaat
-
-Gebruik het gegenereerde IFC als contextmodel en controleer het vóór projectmatig gebruik in een tweede IFC-viewer. Controleer vooral positie, NAP-hoogte, gekozen LoD, eenvoudige 2D-extrusies en de panden die de selectiegrens raken.
+Controleer een gegenereerd IFC vóór projectmatig gebruik in een tweede IFC-viewer, vooral op positie, NAP-hoogte, gekozen LoD en het toegepaste grensgedrag.
